@@ -1,0 +1,12 @@
+import { config } from 'seyfert';
+
+export default config.bot({
+  token: process.env.DISCORD_TOKEN ?? '',
+  intents: ['Guilds', 'GuildVoiceStates', 'GuildMessages', 'MessageContent'],
+  locations: {
+    base: 'src',
+    commands: 'commands',
+    events: 'events',
+    components: 'components',
+  },
+});

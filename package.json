@@ -1,0 +1,39 @@
+{
+  "name": "sora",
+  "version": "1.0.0",
+  "description": "Discord music bot with a persistent controller, live lyrics and autoplay — Bun, Seyfert, Hoshimi, Lavalink.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Fan (https://github.com/fandyahmd)",
+  "keywords": [
+    "discord",
+    "discord-bot",
+    "music-bot",
+    "lavalink",
+    "seyfert",
+    "hoshimi",
+    "bun"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fandyahmd/sora.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fandyahmd/sora/issues"
+  },
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "check": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "hoshimi": "0.6.1",
+    "seyfert": "5.2.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/node": "26.6.6",
+    "typescript": "7.0.2"
+  }
+}

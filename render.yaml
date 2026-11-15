@@ -1,0 +1,32 @@
+# Render blueprint: one free web service running the Dockerfile in this repo.
+# The web service type is deliberate — Render restarts a *worker* freely, but a web service is kept
+# alive by its own health check and can additionally be pinged from outside to stop idle spin-down.
+#
+# Deploy: push this repo, then in Render choose "New > Blueprint" and pick the repo.
+services:
+  - type: web
+    name: sora
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: LAVALINK_HOST
+        sync: false
+      - key: LAVALINK_PORT
+        sync: false
+      - key: LAVALINK_SECURE
+        sync: false
+      - key: LAVALINK_PASSWORD
+        sync: false
+      - key: SUPPORT_INVITE_URL
+        sync: false
+      # Render's own filesystem is ephemeral. Without a disk the database is wiped on every deploy and
+      # each guild must run /setup-channel again. Add a disk in the dashboard (paid plans only) and set
+      # DATABASE_PATH to its mount path, e.g. /var/sora/sora.sqlite — see the README.
+      - key: DATABASE_PATH
+        value: /app/data/sora.sqlite
