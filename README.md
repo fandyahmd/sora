@@ -132,12 +132,12 @@ musl), installs production dependencies only, runs as the unprivileged `bun` use
 ### Render
 
 `render.yaml` in this repo is a ready blueprint — push the repo, then choose **New → Blueprint** in Render
-and pick it. It creates a free web service on Render's native Node runtime with Bun as the runtime.
+and pick it. It creates a free Docker web service built from the `Dockerfile`.
 
-Bun is **pinned to 1.2.0** (`BUN_VERSION`) to match the base image of a bot the owner already runs on
-Render. Newer Bun (1.4.4) failed `bun install` on Render with `DNSResolveFailed` for every tarball;
-whether 1.2.0 fixes that is unverified from here — confirm it on the first deploy. Keep the pin unless a
-newer version is proven to build on Render.
+The `Dockerfile` is based on `oven/bun:1.2.0` (Debian/glibc) — the same base image the owner's other bot
+deploys on Render successfully. Newer Bun (1.4.4) failed `bun install` on Render with `DNSResolveFailed`
+for every tarball; 1.2.0 is the version that is confirmed to work there. Keep it unless a newer version is
+proven to build on Render.
 
 A web service (rather than a worker) is deliberate: Render keeps a web service alive by its own health
 check, and you can additionally point a free uptime monitor at `https://<your-service>.onrender.com/health`

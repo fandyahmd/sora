@@ -1,24 +1,20 @@
-# Render blueprint: one free web service on the native Node/Bun runtime.
+# Render blueprint: one free web service built from the Dockerfile.
 #
-# Bun is pinned to 1.2.0 to match the base image of a bot the owner already deploys successfully on
-# Render. `bun install` here failed DNS on Bun 1.4.4; whether 1.2.0 fixes that on Render is unverified
-# from here and should be confirmed on the first deploy. Keep the pin unless a newer version is proven
-# to build on Render.
+# The Dockerfile is based on oven/bun:1.2.0 (Debian/glibc) — the same base image the owner's other bot
+# deploys on Render successfully. A web service (rather than a worker) is deliberate: Render keeps it
+# alive by its own health check, and it can additionally be pinged to stop idle spin-down.
 #
 # Deploy: push this repo, then in Render choose "New > Blueprint" and pick the repo.
 services:
   - type: web
     name: sora
-    runtime: node
-    buildCommand: bun install --frozen-lockfile
-    startCommand: bun src/index.ts
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     plan: free
     region: singapore
     healthCheckPath: /health
     autoDeploy: true
     envVars:
-      - key: BUN_VERSION
-        value: 1.2.0
       - key: DISCORD_TOKEN
         sync: false
       - key: LAVALINK_HOST
