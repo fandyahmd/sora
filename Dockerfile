@@ -16,6 +16,8 @@ RUN bun install --frozen-lockfile
 COPY tsconfig.json seyfert.config.mjs ./
 COPY src ./src
 COPY tests ./tests
+COPY scripts ./scripts
+COPY sql ./sql
 # Fail the image build on a type error rather than at boot.
 RUN bunx tsc --noEmit
 
@@ -26,17 +28,17 @@ ENV NODE_ENV=production
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/package.json ./
+COPY --from=builder /app/scripts ./scripts
+COPY --from=builder /app/sql ./sql
 COPY seyfert.config.mjs ./
 # The idle banner is read at runtime, so it must be in the image.
 COPY assets ./assets
 
-# Run as the unprivileged user the base image ships, and keep the app directory writable so the SQLite
-# file and the command cache can be created next to the code.
-RUN mkdir -p /app/data && chown -R bun:bun /app
+# Run as the unprivileged user; the command cache still needs a writable app directory.
+RUN chown -R bun:bun /app
 USER bun
 
-ENV PORT=3000 \
-    DATABASE_PATH=/app/data/sora.sqlite
+ENV PORT=3000
 
 EXPOSE 3000
 

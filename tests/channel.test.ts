@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { GuildStore } from '../src/services/db.js';
+import { MemoryStore as GuildStore } from './memory-store.js';
 import { requestFromMessage } from '../src/services/requests.js';
 import { RequestChannels } from '../src/services/channels.js';
 import SetupChannelCommand from '../src/commands/music/setup-channel.js';
@@ -93,7 +93,7 @@ test('setup reuses stored panel, restore edits same message and rejects other gu
 test('a panel that cannot be patched in place is republished instead of breaking playback', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'sora-'));
   const store = new GuildStore(join(dir, 'sora.sqlite'));
-  store.set('guild-a', { requestChannelId: 'text-a', panelMessageId: 'legacy' });
+  await store.set('guild-a', { requestChannelId: 'text-a', panelMessageId: 'legacy' });
   const writes: string[] = [];
   const deletes: string[] = [];
   let legacy = true;
@@ -172,27 +172,6 @@ test('setup rejects caller without Manage Channels even if command permission ov
   assert.equal(setups, 0);
 });
 
-test('a JSON-era install is folded into SQLite once, then the old files stop mattering', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'sora-'));
-  await writeFile(join(dir, 'guilds.json'), JSON.stringify({
-    'guild-a': { requestChannelId: 'channel-a', panelMessageId: 'message-a' },
-    'guild-b': { requestChannelId: 'channel-b', panelMessageId: 'message-b' },
-    'guild-broken': { requestChannelId: 5 },
-  }));
-  await writeFile(join(dir, 'autoplay.json'), JSON.stringify({ 'guild-a': true, 'guild-b': false }));
-  const store = new GuildStore(join(dir, 'sora.sqlite'));
-  assert.deepEqual(store.entries().map(([id]) => id), ['guild-a', 'guild-b']); // Broken rows are skipped, not fatal.
-  assert.equal(store.has('guild-a'), true);
-  assert.equal(store.has('guild-b'), false);
-  assert.equal(existsSync(join(dir, 'guilds.json')), false); // Moved aside, so it cannot be imported twice.
-  assert.equal(existsSync(join(dir, 'autoplay.json')), false);
-
-  // A second store on the same database neither re-imports nor loses anything.
-  const again = new GuildStore(join(dir, 'sora.sqlite'));
-  assert.deepEqual(again.entries().map(([id]) => id), ['guild-a', 'guild-b']);
-  assert.equal(again.has('guild-a'), true);
-  await rm(dir, { recursive: true, force: true });
-});
 
 /** Client stub whose only Discord surface is the one teardown touches, plus setup to build a binding. */
 type TeardownCounters = { channelDeletes: number; deletedChannelIds: string[] };
@@ -221,7 +200,7 @@ test('delete-channel keeps a channel the member picked, and forgets the guild', 
   const counters = { channelDeletes: 0, deletedChannelIds: [] as string[] };
   const channels = new RequestChannels(teardownClient(deleted, counters) as never, store);
   await channels.setup('guild-a', 'text-a'); // Chosen by a person, so it is not Sora's to delete.
-  store.toggleAutoplay('guild-a');
+  await store.toggleAutoplay('guild-a');
   await assert.rejects(() => channels.teardown('guild-unknown'), /not set up/);
   assert.deepEqual(deleted, []);
 
@@ -299,7 +278,7 @@ test('delete-channel says nothing about the channel it deleted, and something ab
 test('request feedback posts a cleanable message while the panel keeps player state only', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'sora-'));
   const store = new GuildStore(join(dir, 'sora.sqlite'));
-  store.set('guild-a', { requestChannelId: 'text-a', panelMessageId: 'panel' });
+  await store.set('guild-a', { requestChannelId: 'text-a', panelMessageId: 'panel' });
   const queries: string[] = [];
   const panels: Array<Record<string, any>> = [];
   const feedback: string[] = [];
@@ -363,7 +342,7 @@ test('request feedback posts a cleanable message while the panel keeps player st
 test('request messages schedule deletion after exactly 5 seconds, including empty and invalid input', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'sora-'));
   const store = new GuildStore(join(dir, 'sora.sqlite'));
-  store.set('guild-a', { requestChannelId: 'text-a', panelMessageId: 'panel' });
+  await store.set('guild-a', { requestChannelId: 'text-a', panelMessageId: 'panel' });
   const timers: Array<() => void> = [];
   const deleted: string[] = [];
   const written: string[] = [];
@@ -398,7 +377,7 @@ test('request messages schedule deletion after exactly 5 seconds, including empt
 test('request cleanup excludes bots, webhooks, other channels, DMs and controller; failures leave playback running', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'sora-'));
   const store = new GuildStore(join(dir, 'sora.sqlite'));
-  store.set('guild-a', { requestChannelId: 'text-a', panelMessageId: 'panel' });
+  await store.set('guild-a', { requestChannelId: 'text-a', panelMessageId: 'panel' });
   const timers: Array<() => Promise<void>> = [];
   const warnings: unknown[][] = [];
   let unrefs = 0;
@@ -451,7 +430,7 @@ test('request cleanup excludes bots, webhooks, other channels, DMs and controlle
 test('expiring confirmations delete after five seconds, but only inside the request channel', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'sora-'));
   const store = new GuildStore(join(dir, 'sora.sqlite'));
-  store.set('guild-a', { requestChannelId: 'text-a', panelMessageId: 'panel' });
+  await store.set('guild-a', { requestChannelId: 'text-a', panelMessageId: 'panel' });
   const timers: Array<() => void> = [];
   const deleted: string[] = [];
   const originalSetTimeout = globalThis.setTimeout;
@@ -480,39 +459,39 @@ test('expiring confirmations delete after five seconds, but only inside the requ
   }
 });
 
-test('guild setup and autoplay survive a restart in SQLite, and clear() forgets the guild', async () => {
+test('guild setup and autoplay survive a restart in the offline fixture, and clear() forgets the guild', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'sora-'));
   const path = join(dir, 'sora.sqlite');
   const store = new GuildStore(path);
-  store.set('guild-a', { requestChannelId: 'channel-a', panelMessageId: 'message-a' });
-  store.set('guild-b', { requestChannelId: 'channel-b', panelMessageId: 'message-b' });
+  await store.set('guild-a', { requestChannelId: 'channel-a', panelMessageId: 'message-a' });
+  await store.set('guild-b', { requestChannelId: 'channel-b', panelMessageId: 'message-b' });
   assert.deepEqual(store.get('guild-a'), { requestChannelId: 'channel-a', panelMessageId: 'message-a' });
   assert.deepEqual(store.entries().map(([id]) => id), ['guild-a', 'guild-b']);
   assert.equal(store.get('guild-unknown'), undefined);
 
   // Autoplay is off by default and flips per guild, never globally.
   assert.equal(store.has('guild-a'), false);
-  assert.equal(store.toggleAutoplay('guild-a'), true);
+  assert.equal(await store.toggleAutoplay('guild-a'), true);
   assert.equal(store.has('guild-a'), true);
   assert.equal(store.has('guild-b'), false);
-  assert.equal(store.toggleAutoplay('guild-a'), false);
+  assert.equal(await store.toggleAutoplay('guild-a'), false);
 
   const restored = new GuildStore(path);
   assert.deepEqual(restored.get('guild-a'), { requestChannelId: 'channel-a', panelMessageId: 'message-a' });
   assert.equal(restored.has('guild-a'), false);
 
   // Autoplay survives a restart too, and setup data is independent of it.
-  restored.toggleAutoplay('guild-b');
+  await restored.toggleAutoplay('guild-b');
   const again = new GuildStore(path);
   assert.equal(again.has('guild-b'), true);
   assert.deepEqual(again.get('guild-b'), { requestChannelId: 'channel-b', panelMessageId: 'message-b' });
 
   // Deleting the setup drops the panel binding, and an autoplay-only row never counts as set up.
-  again.clear('guild-b');
+  await again.clear('guild-b');
   assert.equal(again.get('guild-b'), undefined);
   assert.equal(again.has('guild-b'), false);
   assert.equal(again.entries().length, 1);
-  again.toggleAutoplay('guild-c');
+  await again.toggleAutoplay('guild-c');
   assert.equal(again.get('guild-c'), undefined);
   assert.equal(again.has('guild-c'), true);
   await rm(dir, { recursive: true, force: true });

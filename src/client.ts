@@ -6,11 +6,10 @@ import { MusicService } from './services/music.js';
 import { GuildStore } from './services/db.js';
 
 export class MusicClient extends Client {
-  readonly store = new GuildStore();
   readonly music: MusicService;
   readonly requestChannels: RequestChannels;
 
-  constructor(node: NodeOptions) {
+  constructor(node: NodeOptions, readonly store: GuildStore) {
     super({
       commands: {
         defaults: {

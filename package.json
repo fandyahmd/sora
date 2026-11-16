@@ -25,7 +25,8 @@
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "check": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "migrate:sqlite": "bun scripts/migrate-sqlite.ts"
   },
   "dependencies": {
     "hoshimi": "0.6.1",

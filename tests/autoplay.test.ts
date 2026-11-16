@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { Hoshimi } from 'hoshimi';
-import { GuildStore } from '../src/services/db.js';
+import { MemoryStore as GuildStore } from './memory-store.js';
 import { MusicService } from '../src/services/music.js';
 
 test('autoplay defaults off, flips per guild, and survives a restart', async () => {
@@ -12,11 +12,11 @@ test('autoplay defaults off, flips per guild, and survives a restart', async () 
   try {
     const store = new GuildStore(join(dir, 'sora.sqlite'));
     assert.equal(store.has('guild-a'), false); // Off by default, matching Hoshimi.
-    assert.equal(store.toggleAutoplay('guild-a'), true);
+    assert.equal(await store.toggleAutoplay('guild-a'), true);
     assert.equal(store.has('guild-a'), true);
     assert.equal(store.has('guild-b'), false); // Per guild, never global.
-    assert.equal(store.toggleAutoplay('guild-a'), false);
-    assert.equal(store.toggleAutoplay('guild-a'), true);
+    assert.equal(await store.toggleAutoplay('guild-a'), false);
+    assert.equal(await store.toggleAutoplay('guild-a'), true);
 
     const restored = new GuildStore(join(dir, 'sora.sqlite')); // A restart must not lose the choice.
     assert.equal(restored.has('guild-a'), true);

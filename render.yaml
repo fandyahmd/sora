@@ -25,8 +25,5 @@ services:
         sync: false
       - key: SUPPORT_INVITE_URL
         sync: false
-      # Render's own filesystem is ephemeral. Without a disk the database is wiped on every deploy and
-      # each guild must run /setup-channel again. Add a disk in the dashboard (paid plans only) and set
-      # DATABASE_PATH to its mount path, e.g. /var/sora/sora.sqlite — see the README.
-      - key: DATABASE_PATH
-        value: /app/data/sora.sqlite
+      - key: DATABASE_URL
+        sync: false

@@ -36,7 +36,7 @@ export class RequestChannels {
   /** Edit budget left for this guild's panel, in Discord's own units (one edit per second). */
   private readonly tokens = new Map<string, number>();
   private lastCleanupWarning = -Infinity;
-  constructor(private readonly client: MusicClient, readonly store = new GuildStore()) {
+  constructor(private readonly client: MusicClient, readonly store: Pick<GuildStore, 'get' | 'entries' | 'set' | 'clear'>) {
     this.lyrics = new LyricsService(guildId => this.refresh(guildId));
   }
 
@@ -121,7 +121,7 @@ export class RequestChannels {
       if (old?.requestChannelId === target) {
         try {
           await this.client.messages.edit(old.panelMessageId, target, this.body(guildId));
-          this.store.set(guildId, { requestChannelId: target, panelMessageId: old.panelMessageId, channelOwned: owned });
+          await this.store.set(guildId, { requestChannelId: target, panelMessageId: old.panelMessageId, channelOwned: owned });
           return target;
         } catch (error) {
           if (!this.stale(error)) throw error;
@@ -144,7 +144,7 @@ export class RequestChannels {
       const binding = this.store.get(guildId);
       if (!binding) throw new Error('Sora is not set up in this server yet.');
       // Forget the guild first: a failed channel delete must not leave a binding to a dead channel.
-      this.store.clear(guildId);
+      await this.store.clear(guildId);
       if (!binding.channelOwned) {
         await this.clear(binding.panelMessageId, binding.requestChannelId);
         return { channelId: binding.requestChannelId, channelDeleted: false };
@@ -179,7 +179,7 @@ export class RequestChannels {
       await this.client.messages.edit(binding.panelMessageId, binding.requestChannelId, this.body(guildId));
     } catch (error) {
       if (!this.stale(error)) { console.error('Panel update failed:', error); return; }
-      await this.publish(guildId, binding.requestChannelId, binding.panelMessageId);
+      await this.publish(guildId, binding.requestChannelId, binding.panelMessageId, binding.channelOwned);
     }
   }
 
@@ -206,7 +206,7 @@ export class RequestChannels {
   /** Post a fresh panel and point the guild at it, removing the message it replaces. */
   private async publish(guildId: string, channelId: string, staleId?: string, channelOwned = false) {
     const message = await this.client.messages.write(channelId, this.body(guildId));
-    try { this.store.set(guildId, { requestChannelId: channelId, panelMessageId: message.id, channelOwned }); }
+    try { await this.store.set(guildId, { requestChannelId: channelId, panelMessageId: message.id, channelOwned }); }
     catch (error) { await this.client.messages.delete(message.id, channelId).catch(() => {}); throw error; }
     if (staleId && staleId !== message.id) await this.client.messages.delete(staleId, channelId).catch(() => {});
     return message.id;

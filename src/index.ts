@@ -1,4 +1,5 @@
 import { MusicClient } from './client.js';
+import { GuildStore } from './services/db.js';
 import { readConfig } from './config.js';
 import { startHealthServer } from './services/health.js';
 
@@ -19,7 +20,14 @@ try {
   process.exit(1);
 }
 
-const client = new MusicClient(config.node);
+let store: GuildStore;
+try { store = await GuildStore.open(); }
+catch (error) {
+  console.error(error instanceof Error ? error.message : 'Database initialization failed.');
+  server.stop(true);
+  process.exit(1);
+}
+const client = new MusicClient(config.node, store);
 try {
   await client.start();
   await client.uploadCommands({ cachePath: './commands.json' });
@@ -36,6 +44,7 @@ async function shutdown() {
   for (const player of client.music.manager.players.values()) await player.destroy();
   client.music.manager.nodeManager.destroyAll();
   await client.close();
+  await store.close();
   server.stop(true);
   process.exit(0);
 }

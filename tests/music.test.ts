@@ -1,3 +1,4 @@
+import { MemoryStore } from './memory-store.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Hoshimi, TrackStructure } from 'hoshimi';
@@ -26,7 +27,7 @@ function fixture(checkPermissions?: () => Promise<void>) {
     createPlayer: () => { players.set('guild-a', player); return player; },
     search: async () => { calls.push('search'); return { tracks: [], exception: null }; },
   };
-  const music = new MusicService(manager as unknown as Hoshimi, checkPermissions);
+  const music = new MusicService(manager as unknown as Hoshimi, checkPermissions, new MemoryStore());
   const ctx = {
     guildId: 'guild-a', channelId: 'text-a', author: { id: 'user-a' },
     member: { voice: async () => ({ channelId: 'voice-a' }) },

@@ -7,7 +7,7 @@ export class MusicService {
   readonly suggestions = new Suggestions<TrackStructure>();
 
   private readonly pending = new Map<string, Promise<unknown>>();
-  constructor(readonly manager: Hoshimi, private readonly checkPermissions?: (ctx: VoiceContext, voiceId: string) => Promise<void>, readonly autoplay = new GuildStore()) {}
+  constructor(readonly manager: Hoshimi, private readonly checkPermissions: ((ctx: VoiceContext, voiceId: string) => Promise<void>) | undefined, readonly autoplay: Pick<GuildStore, 'has' | 'toggleAutoplay'>) {}
 
   private serial<T>(guildId: string, task: () => Promise<T>): Promise<T> {
     const next = (this.pending.get(guildId) ?? Promise.resolve()).catch(() => {}).then(task);
@@ -68,7 +68,7 @@ export class MusicService {
   /** Flip autoplay for the guild and, when a player is live, for the running queue too. */
   toggleAutoplay(guildId: string) {
     return this.serial(guildId, async () => {
-      const enabled = this.autoplay.toggleAutoplay(guildId);
+      const enabled = await this.autoplay.toggleAutoplay(guildId);
       const player = this.manager.players.get(guildId);
       if (player) await player.data.set('enabledAutoplay', enabled);
       return enabled;

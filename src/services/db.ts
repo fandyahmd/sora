@@ -1,106 +1,93 @@
-/**
- * One SQLite file for everything Sora remembers per guild: the request-channel panel
- * binding and the autoplay switch. `bun:sqlite` ships with the runtime, so no dependency
- * and no hand-rolled temp-write/rename dance.
- *
- * The path comes from DATABASE_PATH (default ./data/sora.sqlite). On a host with an ephemeral
- * filesystem — Render and Koyeb both give you one — point it at a mounted disk or volume, or every
- * deploy silently starts from an empty database and each guild must set itself up again.
- */
-import { Database } from 'bun:sqlite';
-import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { SQL } from 'bun';
 
-/** `channelOwned` means Sora created the channel itself, so it may delete it again. */
+/** Only channels created by Sora may be deleted during teardown. */
 export type GuildBinding = { requestChannelId: string; panelMessageId: string; channelOwned?: boolean };
+type GuildRow = { guild_id: string; request_channel_id: string | null; panel_message_id: string | null; autoplay: boolean; sora_created: boolean };
 
-type BindingRow = { guild_id: string; request_channel_id: string; panel_message_id: string; sora_created: number | null };
-
+/** One hydrated cache per bot process. Every mutation commits before changing the cache. */
 export class GuildStore {
-  private readonly db: Database;
-  constructor(private readonly path = process.env.DATABASE_PATH?.trim() || './data/sora.sqlite') {
-    mkdirSync(dirname(path), { recursive: true });
-    console.log(`Store: ${path}`);
-    // ponytail: one long-lived connection per process; close it only if a second process ever needs the file.
-    this.db = new Database(path, { create: true });
-    this.db.exec('PRAGMA journal_mode = WAL');
-    this.db.exec(`CREATE TABLE IF NOT EXISTS guilds (
-      guild_id TEXT PRIMARY KEY,
-      request_channel_id TEXT,
-      panel_message_id TEXT,
-      autoplay INTEGER NOT NULL DEFAULT 0,
-      sora_created INTEGER
-    ) STRICT`);
-    this.addMissingColumns();
-    this.importLegacyJson();
-  }
+  private readonly rows = new Map<string, GuildRow>();
+  private readonly pending = new Map<string, Promise<unknown>>();
+  private constructor(private readonly db: SQL) {}
 
-  /** CREATE TABLE IF NOT EXISTS never alters an existing table, so a database made before a column was added needs it appended. */
-  private addMissingColumns() {
-    const columns = new Set(this.db.query<{ name: string }, []>('PRAGMA table_info(guilds)').all().map(column => column.name));
-    if (!columns.has('sora_created')) this.db.exec('ALTER TABLE guilds ADD COLUMN sora_created INTEGER');
-  }
-
-  /** Fold the older JSON files in once, so an upgrade keeps the guilds that were already set up. */
-  private importLegacyJson() {
-    const dir = dirname(this.path);
-    const guilds = join(dir, 'guilds.json');
-    if (existsSync(guilds)) {
-      const data: unknown = JSON.parse(readFileSync(guilds, 'utf8'));
-      if (data && typeof data === 'object' && !Array.isArray(data)) {
-        for (const [guildId, value] of Object.entries(data as Record<string, GuildBinding>)) {
-          if (typeof value?.requestChannelId === 'string' && typeof value?.panelMessageId === 'string') this.set(guildId, value);
-        }
-      }
-      renameSync(guilds, `${guilds}.migrated`);
+  static async open(url = process.env.DATABASE_URL) {
+    let parsed: URL;
+    try { parsed = new URL(url ?? ''); } catch { throw new Error('DATABASE_URL must be a PostgreSQL connection URL.'); }
+    if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || !parsed.hostname || !parsed.username || parsed.pathname.length < 2) {
+      throw new Error('DATABASE_URL must include a PostgreSQL host, user, and database.');
     }
-    const autoplay = join(dir, 'autoplay.json');
-    if (existsSync(autoplay)) {
-      const data: unknown = JSON.parse(readFileSync(autoplay, 'utf8'));
-      if (data && typeof data === 'object' && !Array.isArray(data)) {
-        for (const [guildId, value] of Object.entries(data as Record<string, boolean>)) if (value === true) this.toggleAutoplay(guildId);
-      }
-      renameSync(autoplay, `${autoplay}.migrated`);
+    const local = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+    // Remote connections always verify certificates and hostnames, including when the URL requests weaker SSL.
+    let db: SQL;
+    try { db = new SQL(url!, { max: 5, connectionTimeout: 10, tls: local ? false : { rejectUnauthorized: true } }); }
+    catch { throw new Error('Invalid PostgreSQL connection configuration. Check DATABASE_URL.'); }
+    const store = new GuildStore(db);
+    try {
+      await db`SELECT 1`;
+      const rows: GuildRow[] = await db`SELECT guild_id, request_channel_id, panel_message_id, autoplay, sora_created FROM public.sora_guilds`;
+      for (const row of rows) store.rows.set(row.guild_id, row);
+      return store;
+    } catch {
+      await db.close();
+      // Driver errors can contain connection details. Do not expose credentials in logs or Discord replies.
+      throw new Error('PostgreSQL initialization failed. Check DATABASE_URL, TLS trust, connectivity, and sql/schema.sql.');
     }
   }
 
-  private static readonly SELECT = 'SELECT guild_id, request_channel_id, panel_message_id, sora_created FROM guilds WHERE request_channel_id IS NOT NULL AND panel_message_id IS NOT NULL';
-  private static readonly binding = (row: BindingRow): GuildBinding => ({
-    requestChannelId: row.request_channel_id, panelMessageId: row.panel_message_id,
-    // Absent means the channel was chosen by a person, so Sora must never delete it.
-    ...(row.sora_created === 1 ? { channelOwned: true } : {}),
-  });
+  private serial<T>(guildId: string, task: () => Promise<T>): Promise<T> {
+    const next = (this.pending.get(guildId) ?? Promise.resolve()).catch(() => {}).then(task);
+    this.pending.set(guildId, next);
+    void next.finally(() => { if (this.pending.get(guildId) === next) this.pending.delete(guildId); }).catch(() => {});
+    return next;
+  }
 
   get(guildId: string): GuildBinding | undefined {
-    const row = this.db.query<BindingRow, [string]>(`${GuildStore.SELECT} AND guild_id = ?`).get(guildId);
-    return row ? GuildStore.binding(row) : undefined;
+    const row = this.rows.get(guildId);
+    if (!row?.request_channel_id || !row.panel_message_id) return undefined;
+    return { requestChannelId: row.request_channel_id, panelMessageId: row.panel_message_id,
+      ...(row.sora_created ? { channelOwned: true } : {}) };
   }
 
   entries(): Array<[string, GuildBinding]> {
-    return this.db.query<BindingRow, []>(GuildStore.SELECT).all().map(row => [row.guild_id, GuildStore.binding(row)]);
+    return [...this.rows.keys()].sort().flatMap(id => { const binding = this.get(id); return binding ? [[id, binding] as [string, GuildBinding]] : []; });
   }
 
   set(guildId: string, binding: GuildBinding) {
-    this.db.query(`INSERT INTO guilds (guild_id, request_channel_id, panel_message_id, sora_created) VALUES (?, ?, ?, ?)
-      ON CONFLICT(guild_id) DO UPDATE SET request_channel_id = excluded.request_channel_id, panel_message_id = excluded.panel_message_id, sora_created = excluded.sora_created`)
-      .run(guildId, binding.requestChannelId, binding.panelMessageId, binding.channelOwned ? 1 : null);
+    return this.serial(guildId, async () => {
+      try {
+        const [row] = await this.db`INSERT INTO public.sora_guilds (guild_id, request_channel_id, panel_message_id, sora_created)
+          VALUES (${guildId}, ${binding.requestChannelId}, ${binding.panelMessageId}, ${binding.channelOwned === true})
+          ON CONFLICT (guild_id) DO UPDATE SET request_channel_id = EXCLUDED.request_channel_id,
+          panel_message_id = EXCLUDED.panel_message_id, sora_created = EXCLUDED.sora_created RETURNING *`;
+        this.rows.set(guildId, row);
+      } catch { throw new Error('Unable to save guild settings. Please try again.'); }
+    });
   }
 
-  /** Drop everything remembered for a guild: panel binding and autoplay alike. */
   clear(guildId: string) {
-    this.db.query('DELETE FROM guilds WHERE guild_id = ?').run(guildId);
+    return this.serial(guildId, async () => {
+      try {
+        await this.db`DELETE FROM public.sora_guilds WHERE guild_id = ${guildId}`;
+        this.rows.delete(guildId);
+      } catch { throw new Error('Unable to clear guild settings. Please try again.'); }
+    });
   }
 
-  /** Autoplay is off unless a guild asked for it, matching Hoshimi's own default. */
-  has(guildId: string) {
-    return this.db.query<{ autoplay: number }, [string]>('SELECT autoplay FROM guilds WHERE guild_id = ?').get(guildId)?.autoplay === 1;
-  }
+  has(guildId: string) { return this.rows.get(guildId)?.autoplay === true; }
 
-  /** Returns the state after the flip. */
   toggleAutoplay(guildId: string) {
-    const next = this.has(guildId) ? 0 : 1;
-    this.db.query(`INSERT INTO guilds (guild_id, autoplay) VALUES (?, ?)
-      ON CONFLICT(guild_id) DO UPDATE SET autoplay = excluded.autoplay`).run(guildId, next);
-    return next === 1;
+    return this.serial(guildId, async () => {
+      try {
+        const [row] = await this.db`INSERT INTO public.sora_guilds (guild_id, autoplay) VALUES (${guildId}, true)
+          ON CONFLICT (guild_id) DO UPDATE SET autoplay = NOT sora_guilds.autoplay RETURNING *`;
+        this.rows.set(guildId, row);
+        return row.autoplay as boolean;
+      } catch { throw new Error('Unable to save autoplay settings. Please try again.'); }
+    });
+  }
+
+  async close() {
+    await Promise.allSettled(this.pending.values());
+    await this.db.close();
   }
 }
