@@ -15,9 +15,9 @@ Built by [Fan](https://github.com/fandyahmd). Self-host it, fork it, run it for 
 ## Features
 
 - **Persistent controller.** One card per guild, edited in place, restored after a restart. No message spam.
-- **Live lyrics.** Fetched from [LRCLIB](https://lrclib.net) (free, no API key) and aligned to the audio by
-  duration, so the sung line lights up as the singer starts it. Measured at −26 ms median against a real
-  Discord panel, where the 224 ms round trip is the physical floor.
+- **Live lyrics.** Synced lines from [LRCLIB](https://lrclib.net) (free, no API key), matched by artist,
+  title, recording qualifiers and duration. The highlight follows Hoshimi's playback clock through
+  pause, resume and position corrections; `/lyrics-sync` handles recordings with different intros.
 - **Autoplay.** When the queue ends, Sora keeps the music going from the last track.
 - **Typed requests.** Members type a song title or URL into the request channel; their line is deleted and
   Sora's feedback self-destructs after five seconds.
@@ -28,13 +28,13 @@ Built by [Fan](https://github.com/fandyahmd). Self-host it, fork it, run it for 
   you can point an uptime monitor at it.
 
 Commands: `/setup-channel [channel]`, `/delete-channel`, `/play`, `/queue`, `/pause`, `/resume`, `/skip`,
-`/stop`, `/autoplay`.
+`/stop`, `/autoplay`, `/lyrics-sync`.
 
 ---
 
 ## Quick start
 
-Requirements: [Bun](https://bun.sh) 1.4.4 or newer, a [Turso](https://turso.tech) database, and a Lavalink v4 node you are allowed to use.
+Requirements: [Bun](https://bun.sh) 1.2.0 or newer, a [Turso](https://turso.tech) database, and a Lavalink v4 node you are allowed to use.
 
 ```bash
 bun install --frozen-lockfile
@@ -164,7 +164,7 @@ connection: nothing can prevent that on a free tier, only make it rarer.
 src/index.ts              boot: health server, config, client, graceful shutdown
 src/client.ts             Seyfert client extension + Hoshimi lifecycle wiring
 src/config.ts             environment validation
-src/commands/music/       slash commands (/play, /setup-channel, /delete-channel, …)
+src/commands/music/       slash commands (/play, /setup-channel, /delete-channel, /lyrics-sync, …)
 src/components/music.ts   persistent controller button handlers (no collectors)
 src/events/               botReady initialization, raw voice packet bridge
 src/services/health.ts    HTTP health / keep-alive server
@@ -185,11 +185,28 @@ request — so an un-coalesced burst (a skip fires three events at once) spends 
 payloads and leaves the panel seconds behind. Every event here only marks the panel as stale; one writer
 draws once from the newest state, paced by a token bucket refilled at Discord's own rate.
 
-**Lyrics are aligned by duration, not by title.** The same song exists on LRCLIB as a studio cut, an
-official video with a spoken intro, a live take and a remix, each with its own timings. So the lookup
-derives clean artist/title pairs from YouTube-shaped metadata, then asks LRCLIB for the exact
-artist + title + duration, and rejects anything more than 15 s off the audio being played. Each line's
-timer then fires about 250 ms early, because that is how long the edit takes to reach Discord.
+**Lyrics follow the recording and the playback clock.** The same song can have a studio cut, an
+official video with a spoken intro, a live take and a remix, each with its own timings. Sora derives
+artist/title pairs from upload metadata, validates the returned artist/title and version markers, and
+rejects automatic matches more than 3 s from the track duration. Duration agreement improves selection;
+it cannot prove that the intro, outro or arrangement is identical.
+
+A boundary timer reads Hoshimi's calculated `player.position`, with a 250 ms delivery lead for Discord
+message edits. `playerUpdate`, pause and resume re-arm it; paused playback uses the raw node position,
+not an extrapolating wall clock. Late callbacks catch up immediately. Panel edits remain coalesced and
+rate-limited, so this is line sync rather than a frame-perfect or word-by-word karaoke display.
+
+For an official video whose lyrics start too early, use `/lyrics-sync seconds:3` to delay them by 3 s.
+Use `seconds:-2` to display them 2 s earlier or `seconds:0` to reset. The value is absolute, limited to
+±120 s, and applies only to this playback; it never seeks the audio or carries to the next track. You
+must share the bot's voice channel. If the automatic duration match was rejected, this explicit command
+may use the closest same-title, same-artist, same-version result within 120 s of the audio duration.
+A constant offset cannot repair a recording with different verses or tempo; use the matching audio cut
+for that case. Neither LRCLIB metadata nor Hoshimi/Seyfert can infer the singer's onset from the audio.
+
+References: [Hoshimi lyrics](https://hoshimi-web.vercel.app/docs/guides/lyrics),
+[Hoshimi playback lifecycle](https://hoshimi-web.vercel.app/docs/getting-started/player-lifecycle),
+[Seyfert source](https://github.com/tiramisulabs/seyfert), and [LRCLIB API](https://lrclib.net/docs).
 
 **The controller is Components V2.** A payload cannot mix legacy fields (`content`, `embeds`) with
 `MessageFlags.IsComponentsV2`, and a message created without the flag can never be patched into it. Sora

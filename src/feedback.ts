@@ -22,5 +22,10 @@ export const failed = (reason: string) => `${EMOJI.failed} Request failed: ${rea
 /** Autoplay is a toggle, so one line covers both outcomes. */
 export const autoplayCopy = (on: boolean) => `${EMOJI.autoplay} Autoplay ${on ? 'enabled' : 'disabled'}.`;
 
+/** Lyric offset is absolute for this playback and resets on the next track. */
+export const lyricsSyncCopy = (seconds: number) => seconds === 0
+  ? `${EMOJI.lyrics} Lyrics restored to the original timing.`
+  : `${EMOJI.lyrics} Lyrics shifted ${seconds > 0 ? 'later' : 'earlier'} by ${Math.abs(seconds)}s.`;
+
 /** Only stop is confirmed publicly; every other control answers privately. */
 export const PUBLIC_ACTIONS = new Set<ControlAction>(['stop']);

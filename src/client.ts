@@ -48,13 +48,22 @@ export class MusicClient extends Client {
       manager.on(event, (...[player]) => {
         // A finished player has nothing left to sing, so its lines and ticker go with it.
         if (event === 'queueEnd' || event === 'playerDestroy') channels.lyrics.forget(player.guildId);
+        if (event === 'playerPaused' || event === 'playerResumed') channels.lyrics.align(player);
         void channels.refresh(player.guildId).catch(error => console.error('Panel update failed:', error));
       });
     }
-    // New track, new lyrics: the service looks them up itself and then follows the player's own
-    // position, so the panel stays correct on any node whether or not its lyrics plugin works.
+    // Position corrections and seeks re-arm the boundary timer without adding a polling loop.
+    manager.on('playerUpdate', player => {
+      // Hoshimi 0.6.1 resets the wall-clock anchor on every node packet, even while paused.
+      // Freeze it here or resume's position getter counts paused time until the next node correction.
+      if (player.isPaused()) player.lastPositionUpdate = null;
+      channels.lyrics.align(player);
+    });
+    // New title immediately; LRCLIB latency must not hold the controller behind the playing audio.
     manager.on('trackStart', player => {
-      void channels.lyrics.trackStart(player).then(() => channels.refresh(player.guildId)).catch(error => console.error('Lyrics lookup failed:', error));
+      const lookup = channels.lyrics.trackStart(player);
+      void channels.refresh(player.guildId).catch(error => console.error('Panel update failed:', error));
+      void lookup.catch(error => console.error('Lyrics lookup failed:', error));
     });
   }
 }
