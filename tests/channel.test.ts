@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { test } from 'bun:test';
 import { MemoryStore as GuildStore } from './memory-store.js';
 import { requestFromMessage } from '../src/services/requests.js';
 import { RequestChannels } from '../src/services/channels.js';

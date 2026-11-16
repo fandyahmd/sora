@@ -1,49 +1,29 @@
 # Sora — Bun + Seyfert + Hoshimi (Lavalink v4) music bot.
 #
-# Two stages. The builder resolves dependencies once and typechecks, the runtime stage copies the
-# finished /app across — no second `bun install`, so the image build needs the network in exactly one
-# place and a registry blip cannot break the runtime half.
-#
-# ponytail: dev dependencies ride along in the final image (typescript, @types). ~30 MB against a much
-# simpler, more reliable build; strip them with a `bun prune` step if image size ever matters.
-FROM oven/bun:1.4.4-alpine AS builder
-WORKDIR /app
-
-# Install with a frozen lockfile first, so a dependency change invalidates only this layer.
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
-
-COPY tsconfig.json seyfert.config.mjs ./
-COPY src ./src
-COPY tests ./tests
-COPY scripts ./scripts
-COPY sql ./sql
-# Fail the image build on a type error rather than at boot.
-RUN bunx tsc --noEmit
-
-FROM oven/bun:1.4.4-alpine AS runtime
+# Match the user's working Soundy base image. Sora's tests pass on this version locally;
+# deployment on Render still needs verification. The cause of earlier DNS failures is not established.
+FROM oven/bun:1.2.0
 WORKDIR /app
 ENV NODE_ENV=production
 
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/src ./src
-COPY --from=builder /app/package.json ./
-COPY --from=builder /app/scripts ./scripts
-COPY --from=builder /app/sql ./sql
-COPY seyfert.config.mjs ./
-# The idle banner is read at runtime, so it must be in the image.
-COPY assets ./assets
+COPY --chown=bun:bun package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
 
-# Run as the unprivileged user; the command cache still needs a writable app directory.
+COPY --chown=bun:bun seyfert.config.mjs ./
+COPY --chown=bun:bun src ./src
+COPY --chown=bun:bun sql ./sql
+COPY --chown=bun:bun assets ./assets
+
+# The bot writes commands.json (and the SQLite cache if used) beside the code, so the app dir must be
+# writable by the unprivileged user.
 RUN chown -R bun:bun /app
 USER bun
 
 ENV PORT=3000
-
 EXPOSE 3000
 
-# Koyeb, Docker and Compose use this to decide the service is alive.
+# The Debian image has no wget/curl, so the probe uses bun itself.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD wget -qO- "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1 || exit 1
+  CMD bun -e "const r = await fetch('http://127.0.0.1:' + (process.env.PORT || 3000) + '/health'); process.exit(r.ok ? 0 : 1)"
 
 CMD ["bun", "src/index.ts"]

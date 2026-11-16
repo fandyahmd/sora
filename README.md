@@ -125,20 +125,19 @@ docker build -t sora .
 docker run -d --name sora --env-file .env -p 3000:3000 sora
 ```
 
-The image is multi-stage: dependencies are resolved and typechecked in the builder, and the runtime stage
-copies the result across, so the build touches the network in exactly one place. It runs as the
-unprivileged `bun` user and declares a `HEALTHCHECK` against `/health`.
+The image is built on the Debian-based `oven/bun:1.2.0` (not Alpine — Bun's DNS resolver is unreliable on
+musl), installs production dependencies only, runs as the unprivileged `bun` user, and declares a
+`HEALTHCHECK` against `/health`.
 
 ### Render
 
 `render.yaml` in this repo is a ready blueprint — push the repo, then choose **New → Blueprint** in Render
-and pick it. It creates a free web service on Render's native Node runtime with Bun as the start command.
+and pick it. It creates a free web service on Render's native Node runtime with Bun as the runtime.
 
-Dependencies are installed with **`npm ci`**, not `bun install`: Bun's own DNS resolver fails in Render's
-build environment (`DNSResolveFailed` for every tarball, on both the Docker and native runtimes), while
-npm resolves through the system resolver and works. The resulting `node_modules` is standard and runs fine
-under Bun. `package-lock.json` pins the tree for reproducible builds. The `Dockerfile` remains for Koyeb and
-self-hosted Docker, where `bun install` works normally.
+Bun is **pinned to 1.2.0** (`BUN_VERSION`) to match the base image of a bot the owner already runs on
+Render. Newer Bun (1.4.4) failed `bun install` on Render with `DNSResolveFailed` for every tarball;
+whether 1.2.0 fixes that is unverified from here — confirm it on the first deploy. Keep the pin unless a
+newer version is proven to build on Render.
 
 A web service (rather than a worker) is deliberate: Render keeps a web service alive by its own health
 check, and you can additionally point a free uptime monitor at `https://<your-service>.onrender.com/health`

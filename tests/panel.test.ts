@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test } from 'bun:test';
 import { MessagesMethods } from 'seyfert';
 import { CARD_FLAGS, controlRows, idleCard, panelState, playerCard, queueCard } from '../src/ui/cards.js';
 import { clip, displayText, duration, httpURL } from '../src/ui/text.js';

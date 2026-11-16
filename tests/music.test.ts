@@ -1,6 +1,6 @@
 import { MemoryStore } from './memory-store.js';
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test } from 'bun:test';
 import type { Hoshimi, TrackStructure } from 'hoshimi';
 import type { VoiceContext } from '../src/services/music.js';
 import { MusicService } from '../src/services/music.js';

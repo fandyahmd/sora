@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test } from 'bun:test';
 import { MessagesMethods } from 'seyfert';
 import { deriveQueries, indexAt, LyricsService, parseLRC, type LyricLine, type LyricsPlayer } from '../src/services/lyrics.js';
 import { lyricsBlock, playerCard } from '../src/ui/cards.js';

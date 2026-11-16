@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test } from 'bun:test';
 import { Suggestions } from '../src/services/suggestions.js';
 
 test('suggestions isolate guilds, retain full tracks, and expire', () => {

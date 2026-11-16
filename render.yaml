@@ -1,16 +1,16 @@
 # Render blueprint: one free web service on the native Node/Bun runtime.
 #
-# Bun is the runtime, but dependencies are installed with npm. Bun's own DNS resolver fails in
-# Render's build environment (`DNSResolveFailed` for every tarball, on both the Docker and native
-# runtimes), while npm resolves through the system resolver and works. The resulting node_modules is
-# standard and runs fine under Bun. `BUN_VERSION` pins the runtime; `package-lock.json` pins the tree.
+# Bun is pinned to 1.2.0 to match the base image of a bot the owner already deploys successfully on
+# Render. `bun install` here failed DNS on Bun 1.4.4; whether 1.2.0 fixes that on Render is unverified
+# from here and should be confirmed on the first deploy. Keep the pin unless a newer version is proven
+# to build on Render.
 #
 # Deploy: push this repo, then in Render choose "New > Blueprint" and pick the repo.
 services:
   - type: web
     name: sora
     runtime: node
-    buildCommand: npm ci
+    buildCommand: bun install --frozen-lockfile
     startCommand: bun src/index.ts
     plan: free
     region: singapore
@@ -18,7 +18,7 @@ services:
     autoDeploy: true
     envVars:
       - key: BUN_VERSION
-        value: 1.4.4
+        value: 1.2.0
       - key: DISCORD_TOKEN
         sync: false
       - key: LAVALINK_HOST
