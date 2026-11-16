@@ -93,9 +93,10 @@ PostgreSQL driver. No additional dependency or persistent application disk is re
    Use session pooling, not the transaction pooler on port 6543, for the persistent bot connection.
 3. URL-encode special characters in the database password. Never commit the URL or use a Supabase
    HTTP API key as a database password. Remote connections enforce TLS certificate and hostname
-   validation, even if the URL requests a weaker SSL mode. If your project requires a CA certificate,
-   install the CA from the Supabase dashboard in the host's trusted certificate store; never disable
-   certificate validation. Only loopback development connections use plaintext.
+   validation even if the URL requests a weaker SSL mode; the bundled [`sql/supabase-ca.pem`](sql/supabase-ca.pem)
+   is pinned automatically for `*.supabase.co` and `*.pooler.supabase.com` hosts, because Supabase serves
+   its pooler behind a private CA that is not in the public trust store. Never disable certificate
+   validation. Only loopback development connections use plaintext.
 4. Start Sora. Missing configuration, unreachable PostgreSQL, invalid TLS, or a missing schema fails
    startup before Discord connects. Database URLs and raw database errors are not logged.
 

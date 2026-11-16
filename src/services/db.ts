@@ -17,9 +17,15 @@ export class GuildStore {
       throw new Error('DATABASE_URL must include a PostgreSQL host, user, and database.');
     }
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
-    // Remote connections always verify certificates and hostnames, including when the URL requests weaker SSL.
+    // Supabase serves its pooler (and direct host) behind a private CA that is not in the public trust
+    // store, so `rejectUnauthorized` alone would reject a legitimate connection. Detect the host and pin
+    // the bundled Supabase roots; everything else keeps plain public-CA verification.
+    const supabase = /(^|\.)(supabase\.co|supabase\.com|pooler\.supabase\.com)$/.test(parsed.hostname);
+    const tls = local ? false : supabase
+      ? { rejectUnauthorized: true, ca: Bun.file(new URL('../../sql/supabase-ca.pem', import.meta.url)) }
+      : { rejectUnauthorized: true };
     let db: SQL;
-    try { db = new SQL(url!, { max: 5, connectionTimeout: 10, tls: local ? false : { rejectUnauthorized: true } }); }
+    try { db = new SQL(url!, { max: 5, connectionTimeout: 10, tls }); }
     catch { throw new Error('Invalid PostgreSQL connection configuration. Check DATABASE_URL.'); }
     const store = new GuildStore(db);
     try {
