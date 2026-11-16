@@ -132,7 +132,10 @@ unprivileged `bun` user and declares a `HEALTHCHECK` against `/health`.
 ### Render
 
 `render.yaml` in this repo is a ready blueprint — push the repo, then choose **New → Blueprint** in Render
-and pick it. It creates a free Docker web service with `healthCheckPath: /health`.
+and pick it. It creates a free web service on Render's **native Bun runtime** (`runtime: node`, with Bun
+auto-detected from `bun.lock`), not a Docker build. The Docker runtime is avoided on purpose: Render's
+Docker build environment intermittently fails DNS for `bun install`, while the native build environment
+does not. The `Dockerfile` remains for Koyeb and self-hosted Docker.
 
 A web service (rather than a worker) is deliberate: Render keeps a web service alive by its own health
 check, and you can additionally point a free uptime monitor at `https://<your-service>.onrender.com/health`

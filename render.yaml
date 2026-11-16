@@ -1,18 +1,24 @@
-# Render blueprint: one free web service running the Dockerfile in this repo.
-# The web service type is deliberate — Render restarts a *worker* freely, but a web service is kept
-# alive by its own health check and can additionally be pinged from outside to stop idle spin-down.
+# Render blueprint: one free web service on the native Node/Bun runtime.
+#
+# Bun is used instead of a Docker build. Render's Docker build environment has flaky DNS for
+# `bun install` (it resolves the base image through its mirror, but registry.npmjs.org lookups fail),
+# so the native runtime — which runs `bun install` in Render's standard build environment — is both
+# simpler and reliable. Bun is auto-detected from `bun.lock`; `BUN_VERSION` pins it explicitly.
 #
 # Deploy: push this repo, then in Render choose "New > Blueprint" and pick the repo.
 services:
   - type: web
     name: sora
-    runtime: docker
-    dockerfilePath: ./Dockerfile
+    runtime: node
+    buildCommand: bun install --frozen-lockfile
+    startCommand: bun src/index.ts
     plan: free
     region: singapore
     healthCheckPath: /health
     autoDeploy: true
     envVars:
+      - key: BUN_VERSION
+        value: 1.4.4
       - key: DISCORD_TOKEN
         sync: false
       - key: LAVALINK_HOST
@@ -23,9 +29,9 @@ services:
         sync: false
       - key: LAVALINK_PASSWORD
         sync: false
-      - key: SUPPORT_INVITE_URL
-        sync: false
       - key: TURSO_URL
         sync: false
       - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: SUPPORT_INVITE_URL
         sync: false
