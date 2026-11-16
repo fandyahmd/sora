@@ -1,16 +1,16 @@
 # Render blueprint: one free web service on the native Node/Bun runtime.
 #
-# Bun is used instead of a Docker build. Render's Docker build environment has flaky DNS for
-# `bun install` (it resolves the base image through its mirror, but registry.npmjs.org lookups fail),
-# so the native runtime — which runs `bun install` in Render's standard build environment — is both
-# simpler and reliable. Bun is auto-detected from `bun.lock`; `BUN_VERSION` pins it explicitly.
+# Bun is the runtime, but dependencies are installed with npm. Bun's own DNS resolver fails in
+# Render's build environment (`DNSResolveFailed` for every tarball, on both the Docker and native
+# runtimes), while npm resolves through the system resolver and works. The resulting node_modules is
+# standard and runs fine under Bun. `BUN_VERSION` pins the runtime; `package-lock.json` pins the tree.
 #
 # Deploy: push this repo, then in Render choose "New > Blueprint" and pick the repo.
 services:
   - type: web
     name: sora
     runtime: node
-    buildCommand: bun install --frozen-lockfile
+    buildCommand: npm ci
     startCommand: bun src/index.ts
     plan: free
     region: singapore
