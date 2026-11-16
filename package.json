@@ -29,6 +29,7 @@
     "migrate:sqlite": "bun scripts/migrate-sqlite.ts"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "hoshimi": "0.6.1",
     "seyfert": "5.2.1"
   },

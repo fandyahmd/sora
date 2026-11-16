@@ -1,14 +1,17 @@
 import { Database } from 'bun:sqlite';
-import { SQL } from 'bun';
+import { createClient } from '@libsql/client';
 import { existsSync } from 'node:fs';
-import { GuildStore } from '../src/services/db.js';
 
-/** Explicit, rerunnable import. Existing PostgreSQL guilds always win; SQLite is read-only. */
-export async function migrateSqlite(path: string, url = process.env.DATABASE_URL) {
+/** Explicit, rerunnable import from a legacy local `bun:sqlite` file into Turso. Existing guilds win. */
+export async function migrateSqlite(
+  path: string,
+  url = process.env.TURSO_URL,
+  authToken = process.env.TURSO_AUTH_TOKEN,
+) {
   if (!existsSync(path)) throw new Error('SQLite source does not exist.');
-  // Reuse the application's configuration, connectivity and schema checks before importing anything.
-  const store = await GuildStore.open(url);
-  await store.close();
+  if (!url || (!url.startsWith('libsql://') && !url.startsWith('file:'))) {
+    throw new Error('TURSO_URL must be a libsql:// or file: URL.');
+  }
   const source = new Database(path, { readonly: true });
   let rows: Array<{ guild_id: string; request_channel_id: string | null; panel_message_id: string | null; autoplay: number; sora_created: number | null }>;
   try {
@@ -24,21 +27,20 @@ export async function migrateSqlite(path: string, url = process.env.DATABASE_URL
       }
     }
   } finally { source.close(); }
-  const local = ['localhost', '127.0.0.1', '[::1]'].includes(new URL(url!).hostname);
-  const db = new SQL(url!, { tls: local ? false : { rejectUnauthorized: true } });
+
+  const db = createClient({ url, ...(authToken?.trim() ? { authToken: authToken.trim() } : {}) });
+  let imported = 0;
   try {
-    return await db.begin(async tx => {
-      let imported = 0;
-      for (const row of rows) {
-        const result = await tx`INSERT INTO public.sora_guilds (guild_id, request_channel_id, panel_message_id, autoplay, sora_created)
-          VALUES (${row.guild_id}, ${row.request_channel_id}, ${row.panel_message_id}, ${row.autoplay === 1}, ${row.sora_created === 1})
-          ON CONFLICT (guild_id) DO NOTHING RETURNING guild_id`;
-        imported += result.length;
-      }
-      return { imported, skipped: rows.length - imported };
-    });
-  } catch { throw new Error('SQLite import failed; transaction rolled back. Check the source and PostgreSQL configuration.'); }
-  finally { await db.close(); }
+    for (const row of rows) {
+      const result = await db.execute({
+        sql: `INSERT INTO sora_guilds (guild_id, request_channel_id, panel_message_id, autoplay, sora_created)
+          VALUES (?, ?, ?, ?, ?) ON CONFLICT (guild_id) DO NOTHING`,
+        args: [row.guild_id, row.request_channel_id, row.panel_message_id, row.autoplay, row.sora_created ?? 0],
+      });
+      imported += Number(result.rowsAffected);
+    }
+  } finally { db.close(); }
+  return { imported, skipped: rows.length - imported };
 }
 
 if (import.meta.main) {

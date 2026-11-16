@@ -1,42 +1,53 @@
-import { SQL } from 'bun';
+import { createClient, type Client } from '@libsql/client';
 
 /** Only channels created by Sora may be deleted during teardown. */
 export type GuildBinding = { requestChannelId: string; panelMessageId: string; channelOwned?: boolean };
-type GuildRow = { guild_id: string; request_channel_id: string | null; panel_message_id: string | null; autoplay: boolean; sora_created: boolean };
+type GuildRow = { guild_id: string; request_channel_id: string | null; panel_message_id: string | null; autoplay: number; sora_created: number };
+
+const SCHEMA_URL = new URL('../../sql/schema.sql', import.meta.url);
+
+/** libSQL returns rows as `{ [column]: unknown }`; coerce the known columns into the cache shape. */
+function toRow(raw: Record<string, unknown>): GuildRow {
+  return {
+    guild_id: String(raw.guild_id),
+    request_channel_id: raw.request_channel_id == null ? null : String(raw.request_channel_id),
+    panel_message_id: raw.panel_message_id == null ? null : String(raw.panel_message_id),
+    autoplay: Number(raw.autoplay),
+    sora_created: Number(raw.sora_created),
+  };
+}
 
 /** One hydrated cache per bot process. Every mutation commits before changing the cache. */
 export class GuildStore {
   private readonly rows = new Map<string, GuildRow>();
   private readonly pending = new Map<string, Promise<unknown>>();
-  private constructor(private readonly db: SQL) {}
+  private constructor(private readonly db: Client) {}
 
-  static async open(url = process.env.DATABASE_URL) {
-    let parsed: URL;
-    try { parsed = new URL(url ?? ''); } catch { throw new Error('DATABASE_URL must be a PostgreSQL connection URL.'); }
-    if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || !parsed.hostname || !parsed.username || parsed.pathname.length < 2) {
-      throw new Error('DATABASE_URL must include a PostgreSQL host, user, and database.');
+  static async open(url = process.env.TURSO_URL, authToken = process.env.TURSO_AUTH_TOKEN) {
+    const trimmed = url?.trim() ?? '';
+    if (!trimmed) throw new Error('TURSO_URL must be set (libsql://host or file:path).');
+    if (!trimmed.startsWith('libsql://') && !trimmed.startsWith('file:')) {
+      throw new Error('TURSO_URL must use the libsql:// or file: scheme.');
     }
-    const local = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
-    // Supabase serves its pooler (and direct host) behind a private CA that is not in the public trust
-    // store, so `rejectUnauthorized` alone would reject a legitimate connection. Detect the host and pin
-    // the bundled Supabase roots; everything else keeps plain public-CA verification.
-    const supabase = /(^|\.)(supabase\.co|supabase\.com|pooler\.supabase\.com)$/.test(parsed.hostname);
-    const tls = local ? false : supabase
-      ? { rejectUnauthorized: true, ca: Bun.file(new URL('../../sql/supabase-ca.pem', import.meta.url)) }
-      : { rejectUnauthorized: true };
-    let db: SQL;
-    try { db = new SQL(url!, { max: 5, connectionTimeout: 10, tls }); }
-    catch { throw new Error('Invalid PostgreSQL connection configuration. Check DATABASE_URL.'); }
+    if (trimmed.startsWith('libsql://') && !authToken?.trim()) {
+      throw new Error('TURSO_AUTH_TOKEN must be set for a remote libsql:// database.');
+    }
+    const db = createClient({ url: trimmed, ...(authToken?.trim() ? { authToken: authToken.trim() } : {}) });
     const store = new GuildStore(db);
     try {
-      await db`SELECT 1`;
-      const rows: GuildRow[] = await db`SELECT guild_id, request_channel_id, panel_message_id, autoplay, sora_created FROM public.sora_guilds`;
-      for (const row of rows) store.rows.set(row.guild_id, row);
+      await db.execute(await Bun.file(SCHEMA_URL).text());
+      const result = await db.execute(
+        'SELECT guild_id, request_channel_id, panel_message_id, autoplay, sora_created FROM sora_guilds',
+      );
+      for (const raw of result.rows) {
+        const row = toRow(raw);
+        store.rows.set(row.guild_id, row);
+      }
       return store;
     } catch {
-      await db.close();
+      db.close();
       // Driver errors can contain connection details. Do not expose credentials in logs or Discord replies.
-      throw new Error('PostgreSQL initialization failed. Check DATABASE_URL, TLS trust, connectivity, and sql/schema.sql.');
+      throw new Error('Turso initialization failed. Check TURSO_URL, TURSO_AUTH_TOKEN and connectivity.');
     }
   }
 
@@ -51,7 +62,7 @@ export class GuildStore {
     const row = this.rows.get(guildId);
     if (!row?.request_channel_id || !row.panel_message_id) return undefined;
     return { requestChannelId: row.request_channel_id, panelMessageId: row.panel_message_id,
-      ...(row.sora_created ? { channelOwned: true } : {}) };
+      ...(row.sora_created === 1 ? { channelOwned: true } : {}) };
   }
 
   entries(): Array<[string, GuildBinding]> {
@@ -61,10 +72,15 @@ export class GuildStore {
   set(guildId: string, binding: GuildBinding) {
     return this.serial(guildId, async () => {
       try {
-        const [row] = await this.db`INSERT INTO public.sora_guilds (guild_id, request_channel_id, panel_message_id, sora_created)
-          VALUES (${guildId}, ${binding.requestChannelId}, ${binding.panelMessageId}, ${binding.channelOwned === true})
-          ON CONFLICT (guild_id) DO UPDATE SET request_channel_id = EXCLUDED.request_channel_id,
-          panel_message_id = EXCLUDED.panel_message_id, sora_created = EXCLUDED.sora_created RETURNING *`;
+        const result = await this.db.execute({
+          sql: `INSERT INTO sora_guilds (guild_id, request_channel_id, panel_message_id, sora_created)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (guild_id) DO UPDATE SET request_channel_id = excluded.request_channel_id,
+            panel_message_id = excluded.panel_message_id, sora_created = excluded.sora_created
+            RETURNING guild_id, request_channel_id, panel_message_id, autoplay, sora_created`,
+          args: [guildId, binding.requestChannelId, binding.panelMessageId, binding.channelOwned === true ? 1 : 0],
+        });
+        const row = toRow(result.rows[0]);
         this.rows.set(guildId, row);
       } catch { throw new Error('Unable to save guild settings. Please try again.'); }
     });
@@ -73,27 +89,32 @@ export class GuildStore {
   clear(guildId: string) {
     return this.serial(guildId, async () => {
       try {
-        await this.db`DELETE FROM public.sora_guilds WHERE guild_id = ${guildId}`;
+        await this.db.execute({ sql: 'DELETE FROM sora_guilds WHERE guild_id = ?', args: [guildId] });
         this.rows.delete(guildId);
       } catch { throw new Error('Unable to clear guild settings. Please try again.'); }
     });
   }
 
-  has(guildId: string) { return this.rows.get(guildId)?.autoplay === true; }
+  has(guildId: string) { return this.rows.get(guildId)?.autoplay === 1; }
 
   toggleAutoplay(guildId: string) {
     return this.serial(guildId, async () => {
       try {
-        const [row] = await this.db`INSERT INTO public.sora_guilds (guild_id, autoplay) VALUES (${guildId}, true)
-          ON CONFLICT (guild_id) DO UPDATE SET autoplay = NOT sora_guilds.autoplay RETURNING *`;
+        const result = await this.db.execute({
+          sql: `INSERT INTO sora_guilds (guild_id, autoplay) VALUES (?, 1)
+            ON CONFLICT (guild_id) DO UPDATE SET autoplay = NOT sora_guilds.autoplay
+            RETURNING guild_id, request_channel_id, panel_message_id, autoplay, sora_created`,
+          args: [guildId],
+        });
+        const row = toRow(result.rows[0]);
         this.rows.set(guildId, row);
-        return row.autoplay as boolean;
+        return row.autoplay === 1;
       } catch { throw new Error('Unable to save autoplay settings. Please try again.'); }
     });
   }
 
   async close() {
     await Promise.allSettled(this.pending.values());
-    await this.db.close();
+    this.db.close();
   }
 }

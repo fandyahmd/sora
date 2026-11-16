@@ -25,5 +25,7 @@ services:
         sync: false
       - key: SUPPORT_INVITE_URL
         sync: false
-      - key: DATABASE_URL
+      - key: TURSO_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
         sync: false

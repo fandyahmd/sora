@@ -34,13 +34,13 @@ Commands: `/setup-channel [channel]`, `/delete-channel`, `/play`, `/queue`, `/pa
 
 ## Quick start
 
-Requirements: [Bun](https://bun.sh) 1.4.4 or newer, a Supabase PostgreSQL database, and a Lavalink v4 node you are allowed to use.
+Requirements: [Bun](https://bun.sh) 1.4.4 or newer, a [Turso](https://turso.tech) database, and a Lavalink v4 node you are allowed to use.
 
 ```bash
 bun install --frozen-lockfile
 cp .env.example .env      # then fill it in — see Configuration below
 bun run check             # typecheck
-bun test                  # offline tests; PostgreSQL integration is opt-in
+bun test                  # offline tests; libSQL integration runs on a local file
 bun start
 ```
 
@@ -62,7 +62,7 @@ Attach Files, Connect, Speak, and Manage Channels if you want it to create the r
 
 ## Configuration
 
-Everything is environment variables. `.env.example` lists them all; the six without defaults are required.
+Everything is environment variables. `.env.example` lists them all; the seven without defaults are required.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -71,8 +71,9 @@ Everything is environment variables. `.env.example` lists them all; the six with
 | `LAVALINK_PORT` | — | **Required.** `443` for a secure node. |
 | `LAVALINK_SECURE` | — | **Required.** `true` or `false`. |
 | `LAVALINK_PASSWORD` | — | **Required.** The node's password. |
+| `TURSO_URL` | — | **Required.** `libsql://…` URL from the Turso dashboard. See *Persistence*. |
+| `TURSO_AUTH_TOKEN` | — | **Required.** Full-access token for that database. |
 | `PORT` | `3000` | Health server port. Render and Koyeb inject their own. |
-| `DATABASE_URL` | — | **Required.** PostgreSQL connection URL from Supabase. See *Persistence*. |
 | `SUPPORT_INVITE_URL` | empty | Your own support server, shown on the idle card. Hidden when empty. |
 | `INVITE_PERMISSIONS` | `8` | Permissions for the generated Invite link. |
 | `REPOSITORY_URL` | `https://github.com` | Contact URL in the User-Agent sent to LRCLIB. |
@@ -81,45 +82,37 @@ Never commit `.env`. It is gitignored, and the bot reads credentials only from t
 
 ### Persistence
 
-Sora stores panel bindings, channel ownership and autoplay in `public.sora_guilds` using Bun's built-in
-PostgreSQL driver. No additional dependency or persistent application disk is required.
+Sora stores panel bindings, channel ownership and autoplay in a `sora_guilds` table on [Turso](https://turso.tech)
+using [`@libsql/client`](https://www.npmjs.com/package/@libsql/client). No persistent application disk is required.
 
-1. Create a Supabase project and run [`sql/schema.sql`](sql/schema.sql) in its SQL editor. The script is
-   rerunnable, enables RLS, and grants no access to `anon` or `authenticated`. Do not add public API
-   policies for this table. The bot uses the PostgreSQL owner connection, which bypasses RLS.
-2. Copy a PostgreSQL URL from **Connect** into the secret `DATABASE_URL` environment variable. Use the
-   direct connection on port 5432 when the host supports IPv6. Supabase direct hosts are often IPv6-only;
-   on IPv4-only hosts use the **Session pooler** URL (port 5432, user typically `postgres.<project-ref>`).
-   Use session pooling, not the transaction pooler on port 6543, for the persistent bot connection.
-3. URL-encode special characters in the database password. Never commit the URL or use a Supabase
-   HTTP API key as a database password. Remote connections enforce TLS certificate and hostname
-   validation even if the URL requests a weaker SSL mode; the bundled [`sql/supabase-ca.pem`](sql/supabase-ca.pem)
-   is pinned automatically for `*.supabase.co` and `*.pooler.supabase.com` hosts, because Supabase serves
-   its pooler behind a private CA that is not in the public trust store. Never disable certificate
-   validation. Only loopback development connections use plaintext.
-4. Start Sora. Missing configuration, unreachable PostgreSQL, invalid TLS, or a missing schema fails
-   startup before Discord connects. Database URLs and raw database errors are not logged.
+1. Create a database on Turso and copy its `libsql://…` URL and the full-access auth token into the
+   `TURSO_URL` and `TURSO_AUTH_TOKEN` environment variables. The bot creates the table itself on startup
+   (see [`sql/schema.sql`](sql/schema.sql)); no manual SQL step is needed.
+2. The auth token grants full read/write to the whole database — treat it like a password. Turso has no
+   per-table access control, so never ship the token in the repo or expose it to members.
+3. Start Sora. Missing configuration or an unreachable database fails startup before Discord connects.
+   Database URLs, tokens and raw database errors are never logged.
 
 The cache hydrates before Discord starts. Mutations are awaited and update the cache only after SQL
-succeeds; toggles use an atomic SQL upsert. Panel and lyric renders read the cache without network
-queries. Run **one bot process per database**: another process or manual SQL edits will not refresh its
-cache until restart. Queues, active playback and lyrics are still memory-only.
+succeeds; toggles use an atomic SQL upsert (`ON CONFLICT … SET autoplay = NOT sora_guilds.autoplay`). Panel
+and lyric renders read the cache without network queries. Run **one bot process per database**: another
+process or manual SQL edits will not refresh its cache until restart, and Turso is single-writer, so two
+processes writing the same guild can race. Queues, active playback and lyrics are still memory-only.
 
 #### Optional SQLite migration
 
-Stop the old bot and back up its SQLite file, including WAL files if the old process has not exited.
-Apply the PostgreSQL schema and set `DATABASE_URL`, then run:
+Stop the old bot and back up its SQLite file, including WAL files if the old process has not exited. Set
+`TURSO_URL` (and `TURSO_AUTH_TOKEN` for a remote database), then run:
 
 ```bash
 bun run migrate:sqlite /path/to/sora.sqlite
 ```
 
 This explicit import reads SQLite without modifying or deleting it. It imports panel IDs, autoplay and
-channel ownership in one PostgreSQL transaction. Pre-ownership schemas default to unowned channels.
-Existing PostgreSQL guilds win (`ON CONFLICT DO NOTHING`), so rerunning is safe and never flips autoplay
-or overwrites newer settings. Invalid source rows abort the import. Review the imported/skipped counts,
-then start the new bot. Legacy JSON files are not imported; migrate those with the previous SQLite
-release first. `DATABASE_PATH` is no longer used.
+channel ownership. Pre-ownership schemas default to unowned channels. Existing guilds win
+(`ON CONFLICT DO NOTHING`), so rerunning is safe and never flips autoplay or overwrites newer settings.
+Invalid source rows abort the import. Review the imported/skipped counts, then start the new bot. Legacy
+JSON files are not imported; migrate those with the previous SQLite release first.
 
 ---
 
@@ -173,7 +166,7 @@ src/services/health.ts    HTTP health / keep-alive server
 src/services/channels.ts  the request channel: panel writer, cleanup, feedback
 src/services/lyrics.ts    lyrics lookup (LRCLIB) and per-line scheduling
 src/services/music.ts     playback: queueing, voice checks, per-guild serialization
-src/services/db.ts        PostgreSQL store and hydrated cache, one row per guild
+src/services/db.ts        Turso/libSQL store and hydrated cache, one row per guild
 src/services/*.ts         request parsing, autocomplete cache, control actions
 src/ui/                   pure renderers: cards, theme, sanitization
 tests/                    offline tests with stub connections
@@ -202,23 +195,16 @@ publishes a fresh panel instead of retrying such an edit, and treats a deleted m
 ## Verification
 
 `bun test` runs offline tests for render states, requests, permissions, voice boundaries, serialization,
-teardown, lyrics and configuration. Discord tests use an in-memory store; PostgreSQL integration is
-skipped unless `TEST_DATABASE_URL` is explicitly provided. `bun run check` checks TypeScript.
+teardown, lyrics and configuration. Discord tests use an in-memory store; the libSQL integration test runs
+automatically against a local, disposable `file:` database — no server or credentials required. `bun run
+check` checks TypeScript.
 
-Run the SQL integration test against an **isolated, disposable** local PostgreSQL database:
+The integration test (`tests/db.integration.test.ts`) creates its own schema and verifies upserts, restart
+restore, serialized toggles, teardown, failed-write cache safety, and the idempotent SQLite migration with
+an unchanged source file. It never reads `TURSO_URL` or `TURSO_AUTH_TOKEN`.
 
-```bash
-docker run --rm -d --name sora-pg-test -e POSTGRES_HOST_AUTH_METHOD=trust \
-  -e POSTGRES_DB=sora_test -p 127.0.0.1:55432:5432 postgres:17-alpine
-# Wait for: docker exec sora-pg-test pg_isready -U postgres
-TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/sora_test bun test
-docker stop sora-pg-test
-```
-
-The integration test requires a loopback host and database named `sora_test`. It creates and drops
-`public.sora_guilds`; never point it at real data. It verifies schema reruns/RLS, upserts, restart restore,
-concurrent toggles within and across connections, teardown, failed-write cache safety, and idempotent
-SQLite migration with an unchanged source file. It never reads `DATABASE_URL` for its test connection.
+To verify against a real remote Turso database (optional), set `TURSO_URL` and `TURSO_AUTH_TOKEN` and start
+the bot: the table is created on startup and startup fails loudly if the connection is unusable.
 
 They do **not** verify a Discord login, the live voice handshake, or audible playback — those need a real
 token, a real node and a real voice channel. No credentials or node addresses are bundled with this repo.

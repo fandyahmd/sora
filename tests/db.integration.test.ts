@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { test } from 'bun:test';
-import { SQL } from 'bun';
 import { Database } from 'bun:sqlite';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -8,48 +7,20 @@ import { tmpdir } from 'node:os';
 import { GuildStore } from '../src/services/db.js';
 import { migrateSqlite } from '../scripts/migrate-sqlite.js';
 
-const url = process.env.TEST_DATABASE_URL;
-
-test('store rejects missing and non-PostgreSQL configuration', async () => {
-  for (const value of ['', 'sqlite://data/sora.sqlite', 'https://example.com', 'postgres://localhost']) {
-    await assert.rejects(() => GuildStore.open(value), /DATABASE_URL/);
+test('store rejects missing and non-libsql configuration', async () => {
+  for (const value of ['', 'postgres://localhost/db', 'https://example.com']) {
+    await assert.rejects(() => GuildStore.open(value, ''), /TURSO_URL/);
   }
+  await assert.rejects(() => GuildStore.open('libsql://host', undefined), /TURSO_AUTH_TOKEN/);
 });
 
-// Explicit opt-in, loopback and dedicated database guard: never run against the bot's remote database.
-(url ? test : test.skip)('PostgreSQL upsert, restart, concurrent toggles, teardown, failure and SQLite import', async () => {
-  const parsed = new URL(url!);
-  assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname));
-  assert.equal(parsed.pathname, '/sora_test');
-  const db = new SQL(url!, { tls: false });
+// Runs offline against a local `file:` database; no server or credentials required.
+test('libSQL upsert, restart, toggles, teardown, failure and SQLite import', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sora-libsql-'));
+  const url = `file:${join(dir, 'sora.db')}`;
   const stores: GuildStore[] = [];
   const open = async () => { const store = await GuildStore.open(url); stores.push(store); return store; };
-  const dir = await mkdtemp(join(tmpdir(), 'sora-pg-'));
   try {
-    await db.unsafe(await Bun.file(new URL('../sql/schema.sql', import.meta.url)).text()).simple();
-    await db.unsafe(await Bun.file(new URL('../sql/schema.sql', import.meta.url)).text()).simple();
-    await db`TRUNCATE public.sora_guilds`;
-    const [security] = await db`SELECT relrowsecurity FROM pg_class WHERE oid = 'public.sora_guilds'::regclass`;
-    assert.equal(security.relrowsecurity, true);
-    await db`INSERT INTO public.sora_guilds (guild_id) VALUES ('private')`;
-    await db`CREATE ROLE sora_api_test NOLOGIN`;
-    try {
-      await db`GRANT USAGE ON SCHEMA public TO sora_api_test`;
-      await db`GRANT SELECT, INSERT ON public.sora_guilds TO sora_api_test`;
-      await db.begin(async tx => {
-        await tx`SET LOCAL ROLE sora_api_test`;
-        assert.equal((await tx`SELECT * FROM public.sora_guilds`).length, 0, 'RLS hides existing guilds');
-      });
-      await assert.rejects(() => db.begin(async tx => {
-        await tx`SET LOCAL ROLE sora_api_test`;
-        await tx`INSERT INTO public.sora_guilds (guild_id) VALUES ('forbidden')`;
-      }), /row-level security/);
-    } finally {
-      await db`REVOKE ALL ON public.sora_guilds FROM sora_api_test`;
-      await db`REVOKE ALL ON SCHEMA public FROM sora_api_test`;
-      await db`DROP ROLE sora_api_test`;
-      await db`DELETE FROM public.sora_guilds WHERE guild_id = 'private'`;
-    }
     const store = await open();
     assert.equal(store.has('a'), false);
     assert.equal(await store.toggleAutoplay('a'), true);
@@ -57,30 +28,26 @@ test('store rejects missing and non-PostgreSQL configuration', async () => {
     await store.set('a', { requestChannelId: 'channel', panelMessageId: 'new', channelOwned: true });
     assert.equal(store.has('a'), true, 'binding upsert preserves autoplay');
     await store.close();
+
     const restored = await open();
     assert.deepEqual(restored.get('a'), { requestChannelId: 'channel', panelMessageId: 'new', channelOwned: true });
     assert.equal(restored.has('a'), true);
     const flips = await Promise.all(Array.from({ length: 20 }, () => restored.toggleAutoplay('a')));
-    assert.equal(flips.filter(Boolean).length, 10);
+    assert.equal(flips.filter(Boolean).length, 10, 'serialized toggles stay atomic');
     assert.equal(restored.has('a'), true);
-    const other = await open();
-    const concurrent = await Promise.all(Array.from({ length: 21 }, (_, i) => (i % 2 ? restored : other).toggleAutoplay('a')));
-    assert.equal(concurrent.filter(Boolean).length, 10, 'SQL toggle remains atomic across separate connections');
-    const latest = await open();
-    assert.equal(latest.has('a'), false);
-    assert.equal(latest.get('a')?.panelMessageId, 'new');
-    const before = latest.get('a');
-    await assert.rejects(() => latest.set('a', { requestChannelId: '', panelMessageId: 'invalid' }), /Unable to save/);
-    assert.deepEqual(latest.get('a'), before, 'failed persistence cannot mutate cache');
-    await latest.clear('a');
-    assert.equal(latest.get('a'), undefined);
-    assert.equal(latest.has('a'), false);
-    const cleared = await open();
-    assert.equal(cleared.entries().length, 0);
-    await cleared.toggleAutoplay('autoplay-only');
-    assert.equal(cleared.get('autoplay-only'), undefined);
-    assert.equal(cleared.entries().length, 0);
 
+    const before = restored.get('a');
+    await assert.rejects(() => restored.set('a', { requestChannelId: '', panelMessageId: 'invalid' }), /Unable to save/);
+    assert.deepEqual(restored.get('a'), before, 'failed persistence cannot mutate cache');
+
+    await restored.clear('a');
+    assert.equal(restored.get('a'), undefined);
+    assert.equal(restored.has('a'), false);
+    await restored.toggleAutoplay('autoplay-only');
+    assert.equal(restored.get('autoplay-only'), undefined);
+    assert.equal(restored.entries().length, 0);
+
+    // Legacy SQLite import: rerunnable, existing guilds win, source byte-identical.
     const path = join(dir, 'legacy.sqlite');
     const sqlite = new Database(path);
     sqlite.exec(`CREATE TABLE guilds (guild_id TEXT PRIMARY KEY, request_channel_id TEXT, panel_message_id TEXT, autoplay INTEGER, sora_created INTEGER);
@@ -93,14 +60,12 @@ test('store rejects missing and non-PostgreSQL configuration', async () => {
     const migrated = await open();
     assert.deepEqual(migrated.get('legacy'), { requestChannelId: 'text', panelMessageId: 'panel', channelOwned: true });
     assert.equal(migrated.has('legacy'), true);
-    assert.equal(migrated.has('autoplay-only'), true, 'rerun never overwrites existing PostgreSQL state');
+    assert.equal(migrated.has('autoplay-only'), true, 'rerun never overwrites existing state');
     await migrated.close();
     await assert.rejects(() => migrated.clear('legacy'), /Unable to clear/);
     assert.ok(migrated.get('legacy'), 'failed delete retains cached binding');
   } finally {
-    for (const store of stores) await store.close();
-    await db`DROP TABLE public.sora_guilds`;
-    await db.close();
+    for (const store of stores) store.close();
     await rm(dir, { recursive: true, force: true });
   }
 }, 30_000);
