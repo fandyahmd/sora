@@ -35,9 +35,11 @@ export class RequestChannels {
   private readonly drawn = new Map<string, number>();
   /** Edit budget left for this guild's panel, in Discord's own units (one edit per second). */
   private readonly tokens = new Map<string, number>();
+  /** Guilds whose next draw carries a lyric line change and may skip the refill wait. */
+  private readonly urgent = new Set<string>();
   private lastCleanupWarning = -Infinity;
   constructor(private readonly client: MusicClient, readonly store: Pick<GuildStore, 'get' | 'entries' | 'set' | 'clear'>) {
-    this.lyrics = new LyricsService(guildId => this.refresh(guildId));
+    this.lyrics = new LyricsService((guildId, urgent) => this.refresh(guildId, urgent));
   }
 
   /** One mutation per guild at a time, so overlapping requests cannot write the panel twice. */
@@ -59,9 +61,14 @@ export class RequestChannels {
    * the *first* edit after a quiet spell, and that delay is visible as a lyric line landing late on
    * Discord. The bucket refills at Discord's own 1/s, holds a small reserve so ordinary traffic never
    * queues, and applies its wait before the request rather than letting the HTTP layer absorb a 429.
+   *
+   * A lyric line is the one caller that may not wait: Soundy edits on every pushed line and is the
+   * reference for how live this looks. Urgent draws skip the refill wait and accept the rare 429 the
+   * HTTP layer already handles, because a line held back a full second reads as broken lyrics.
    */
-  private draw(guildId: string): Promise<unknown> {
+  private draw(guildId: string, urgent = false): Promise<unknown> {
     this.wanted.add(guildId);
+    if (urgent) this.urgent.add(guildId);
     const existing = this.writing.get(guildId);
     if (existing) return existing;
     const run = (async () => {
@@ -72,13 +79,14 @@ export class RequestChannels {
           await new Promise(resolve => setTimeout(resolve, 0).unref());
           const now = Date.now();
           const tokens = Math.min(PANEL_BURST_TOKENS, (this.tokens.get(guildId) ?? PANEL_BURST_TOKENS) + (now - (this.drawn.get(guildId) ?? now)) / PANEL_REFILL_MS);
-          if (tokens < 1) {
+          if (tokens < 1 && !this.urgent.has(guildId)) {
             // Too soon: wait exactly until one token exists, then draw once from the newest state.
             await new Promise(resolve => setTimeout(resolve, Math.ceil((1 - tokens) * PANEL_REFILL_MS)).unref());
             continue;
           }
+          this.urgent.delete(guildId);
           this.wanted.delete(guildId);
-          this.tokens.set(guildId, Math.min(PANEL_BURST_TOKENS, tokens) - 1);
+          this.tokens.set(guildId, Math.max(0, Math.min(PANEL_BURST_TOKENS, tokens) - 1));
           this.drawn.set(guildId, Date.now());
           await this.write(guildId);
           if (!this.wanted.has(guildId)) break;
@@ -188,8 +196,8 @@ export class RequestChannels {
    * already guaranteed by `draw`'s single-flight loop, and serialising here would make every caller
    * wait its turn and then draw its own stale payload — the exact lag this design removes.
    */
-  refresh(guildId: string) {
-    return this.draw(guildId);
+  refresh(guildId: string, urgent = false) {
+    return this.draw(guildId, urgent);
   }
 
   /**

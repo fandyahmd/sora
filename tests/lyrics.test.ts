@@ -508,3 +508,80 @@ test('the panel shows the sung line in place, stays bounded, and never lets a ly
   const content = hostile.components[0].components[2].content as string;
   assert.equal(content, '-# 🎤 Lyrics\n**bold link(https://x)**\n-#  \n-# ');
 });
+
+/** A player whose node exposes a lyrics plugin, the way Hoshimi presents `player.lyrics`. */
+function pushedPlayer(guildId: string, lines: Array<{ timestamp: number; line: string }>, counters = { subscribes: 0, unsubscribes: 0 }): LyricsPlayer {
+  return {
+    ...player(guildId),
+    lyrics: {
+      subscribe: async () => { counters.subscribes++; },
+      unsubscribe: async () => { counters.unsubscribes++; },
+      current: async () => ({ provider: 'LavaLyrics', lines }),
+    },
+  };
+}
+
+test('a node lyrics plugin drives the highlight from pushed lines instead of boundary timers', async () => {
+  const timers = fakeTimers();
+  try {
+    const edits: string[] = [];
+    const counters = { subscribes: 0, unsubscribes: 0 };
+    const speaker = pushedPlayer('guild-push', [
+      { timestamp: 0, line: 'one' }, { timestamp: 1_000, line: 'two' }, { timestamp: 2_000, line: 'three' },
+    ], counters);
+    const lyrics = new LyricsService(async (guildId, urgent) => { edits.push(`${guildId}:${String(urgent)}`); });
+    await lyrics.trackStart(speaker);
+    assert.equal(counters.subscribes, 1);
+    assert.deepEqual(lyrics.current('guild-push'), { lines: ['one', 'two', 'three'], index: 0 });
+    assert.equal(timers.queued, 0, 'the node owns the boundary; no timer is armed');
+    lyrics.ingest('guild-push', { lineIndex: 1, skipped: false });
+    assert.equal(lyrics.current('guild-push')!.index, 1);
+    assert.equal(edits.at(-1), 'guild-push:true', 'a line change skips the panel refill wait');
+    lyrics.ingest('guild-push', { lineIndex: 2, skipped: true }); // seek correction keeps the node index
+    assert.equal(lyrics.current('guild-push')!.index, 2);
+    lyrics.stop(speaker);
+    assert.equal(counters.unsubscribes, 1, 'a finished player releases its node subscription');
+  } finally { timers.restore(); }
+});
+
+test('a node without a working lyrics plugin falls back to LRCLIB timing and is asked only once', async () => {
+  const timers = fakeTimers();
+  try {
+    const lookups: string[] = [];
+    let subscribes = 0;
+    const lyrics = new LyricsService(async () => {}, async track => {
+      lookups.push(track.info.title!);
+      return [timed('a', 0), timed('b', 1_000)];
+    });
+    const speaker = (title: string): LyricsPlayer => ({
+      ...player('guild-fallback', title),
+      lyrics: { subscribe: async () => { subscribes++; throw new Error('API_Internal Server Error_500'); }, unsubscribe: async () => {}, current: async () => null },
+    });
+    await lyrics.trackStart(speaker('First'));
+    assert.deepEqual(lyrics.current('guild-fallback'), { lines: ['a', 'b'], index: 0 });
+    assert.equal(timers.next, 1_000 - 250, 'a client-side boundary timer is armed instead');
+    await lyrics.trackStart(speaker('Second'));
+    assert.equal(subscribes, 1, 'the dead plugin endpoint is not retried on every track');
+    assert.deepEqual(lookups, ['First', 'Second']);
+  } finally { timers.restore(); }
+});
+
+test('push mode honours /lyrics-sync: delayed lines wait, early lines leap ahead', async () => {
+  const timers = fakeTimers();
+  try {
+    const speaker = pushedPlayer('guild-offset', [
+      { timestamp: 0, line: 'one' }, { timestamp: 1_000, line: 'two' }, { timestamp: 2_000, line: 'three' },
+    ]);
+    const lyrics = new LyricsService(async () => {});
+    await lyrics.trackStart(speaker);
+    await lyrics.setOffset(speaker, 2); // +2 s: the pushed line is held back by exactly that much
+    assert.equal(lyrics.current('guild-offset')!.index, -1);
+    lyrics.ingest('guild-offset', { lineIndex: 1, skipped: false });
+    assert.equal(timers.next, 2_000, 'the new line is held for the offset');
+    await timers.drain();
+    assert.equal(lyrics.current('guild-offset')!.index, 1);
+    await lyrics.setOffset(speaker, -1.5); // -1.5 s: use the plugin's own timestamps to show a line early
+    lyrics.ingest('guild-offset', { lineIndex: 0, skipped: false });
+    assert.equal(lyrics.current('guild-offset')!.index, 1, 'the highlight runs ahead of the pushed index');
+  } finally { timers.restore(); }
+});

@@ -46,12 +46,15 @@ export class MusicClient extends Client {
     const channels = this.requestChannels;
     for (const event of ['queueEnd', 'playerDestroy', 'playerPaused', 'playerResumed', 'queueUpdate'] as const) {
       manager.on(event, (...[player]) => {
-        // A finished player has nothing left to sing, so its lines and ticker go with it.
-        if (event === 'queueEnd' || event === 'playerDestroy') channels.lyrics.forget(player.guildId);
+        // A finished player has nothing left to sing, so its lines, ticker and node subscription go with it.
+        if (event === 'queueEnd' || event === 'playerDestroy') channels.lyrics.stop(player);
         if (event === 'playerPaused' || event === 'playerResumed') channels.lyrics.align(player);
         void channels.refresh(player.guildId).catch(error => console.error('Panel update failed:', error));
       });
     }
+    // A node that runs a lyrics plugin pushes each line on its own playback clock — the mechanism
+    // Soundy shows. No plugin means LyricsService already fell back to bot-side boundary timers.
+    manager.on('lyricsLine', (player, _track, payload) => channels.lyrics.ingest(player.guildId, payload));
     // Position corrections and seeks re-arm the boundary timer without adding a polling loop.
     manager.on('playerUpdate', player => {
       // Hoshimi 0.6.1 resets the wall-clock anchor on every node packet, even while paused.

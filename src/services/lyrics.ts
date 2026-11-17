@@ -1,9 +1,11 @@
 /**
  * Live lyrics for the music controller.
  *
- * The node's LavaLyrics plugin answers HTTP 500 for every source here, so lines come bot-side from
- * LRCLIB at track start and the sung line is derived from the player's own position, which makes the
- * feature work on any node.
+ * Two clocks, best first. A node that runs a lyrics plugin (LavaLyrics, java-lyrics, lavasrc) pushes
+ * a `LyricsLine` event as each line starts, so the highlight follows the node's own playback clock —
+ * the mechanism Soundy uses, and the reason its lines never drift. When the plugin is missing or
+ * erroring (every route answers 5xx), lines come bot-side from LRCLIB at track start and the sung line
+ * is derived from the player's own position, which keeps the feature working on any node.
  *
  * Alignment is the hard part, not fetching: one song exists on LRCLIB as a studio cut, an official
  * video with a spoken intro, a live take, and a remix, each with its own timings. The lookup derives
@@ -26,8 +28,12 @@ const USER_AGENT = `Sora/1.0 (+${process.env.REPOSITORY_URL ?? 'https://github.c
 export type LyricsSlice = { lines: readonly string[]; index: number };
 export type LyricLine = { time: number; text: string };
 export type LyricsTrack = { info: { title?: string; author?: string; length?: number; isStream?: boolean } };
+/** What a node lyrics plugin answers once subscribed (Hoshimi's `LyricsResult`, narrowed). */
+export type LyricsNodeResult = { provider?: string; lines?: readonly { timestamp: number; line: string }[] | null };
+/** Hoshimi's `player.lyrics` surface; present only when the node runs a lyrics plugin. */
+export type LyricsNode = { subscribe: () => Promise<unknown>; unsubscribe: () => Promise<unknown>; current: () => Promise<LyricsNodeResult | null> };
 /** The only player surface this service touches, so it can be tested without Lavalink. */
-export type LyricsPlayer = { guildId: string; position: number; lastPosition?: number; isPaused?: () => boolean; queue: { current?: LyricsTrack | null } };
+export type LyricsPlayer = { guildId: string; position: number; lastPosition?: number; isPaused?: () => boolean; queue: { current?: LyricsTrack | null }; lyrics?: LyricsNode };
 
 /** Strip brackets, upload noise and separator tails: `X (Official Video)` -> `X`. */
 function clean(value?: string) {
@@ -186,7 +192,7 @@ async function lookupLyrics(track: LyricsTrack, manual = false): Promise<LyricLi
   return parseLRC(best.syncedLyrics);
 }
 
-type Entry = { track: LyricsTrack; lines: string[]; times: number[]; index: number; offset: number; pausedAt?: number; timer?: ReturnType<typeof setTimeout> };
+type Entry = { track: LyricsTrack; lines: string[]; times: number[]; index: number; offset: number; mode: 'timer' | 'push'; pausedAt?: number; timer?: ReturnType<typeof setTimeout>; pending?: ReturnType<typeof setTimeout> };
 
 /** A boundary already due still needs a tick, so the scheduler never arms a zero-delay spin. */
 const MIN_WAIT_MS = 15;
@@ -195,10 +201,14 @@ const LEAD_MS = 250;
 
 export class LyricsService {
   private readonly entries = new Map<string, Entry>();
+  /** Guilds whose player is subscribed to node-pushed lines. */
+  private readonly subscribed = new Set<string>();
+  /** One latch: a node without a working lyrics plugin must not cost a subscribe attempt per track. */
+  private pushUnavailable = false;
 
   constructor(
     // The panel writer collapses and paces repaints itself, so a changed line just asks for one.
-    private readonly refresh: (guildId: string) => Promise<unknown>,
+    private readonly refresh: (guildId: string, urgent?: boolean) => Promise<unknown>,
     private readonly lookup: (track: LyricsTrack, manual?: boolean) => Promise<LyricLine[]> = lookupLyrics,
   ) {}
 
@@ -213,8 +223,11 @@ export class LyricsService {
     this.forget(player.guildId);
     const track = player.queue.current;
     if (!track) return;
-    const entry: Entry = { track, lines: [], times: [], index: -1, offset: 0 };
+    const entry: Entry = { track, lines: [], times: [], index: -1, offset: 0, mode: 'timer' };
     this.entries.set(player.guildId, entry);
+    // Staying synchronous when the node cannot push keeps the LRCLIB request starting in this tick.
+    const push = this.startPush(player, entry);
+    if (push !== false && await push) return;
     const lines = await this.lookup(track).catch(() => []);
     // Identity guards stop/skip/repeat races even when Hoshimi reuses the same Track object.
     if (this.entries.get(player.guildId) !== entry || player.queue.current !== track || entry.lines.length) return;
@@ -224,6 +237,68 @@ export class LyricsService {
     entry.index = indexAt(entry.times, this.position(player, entry) - entry.offset + LEAD_MS);
     void this.touch(player.guildId);
     this.schedule(player);
+  }
+
+  /**
+   * Preferred clock: ask the node for its lyrics and let `LyricsLine` events move the highlight.
+   * Returns false when the node has no working plugin or no lyrics for this track, so the caller
+   * falls back to bot-side timing without losing the panel.
+   */
+  private startPush(player: LyricsPlayer, entry: Entry): Promise<boolean> | false {
+    const lyrics = player.lyrics;
+    if (!lyrics || this.pushUnavailable) return false;
+    return this.pushLyrics(player, entry, lyrics);
+  }
+
+  private async pushLyrics(player: LyricsPlayer, entry: Entry, lyrics: LyricsNode): Promise<boolean> {
+    if (!this.subscribed.has(player.guildId)) {
+      const failure = await lyrics.subscribe().then(() => null, (error: unknown) => error);
+      if (failure) {
+        // A node whose plugin is missing or erroring answers every lyrics route with 5xx. Latch so
+        // a dead plugin costs one request ever, not one per track.
+        this.pushUnavailable = true;
+        console.warn('Lyrics plugin unavailable on the node; live lines fall back to bot-side timing.');
+        return false;
+      }
+      this.subscribed.add(player.guildId);
+    }
+    const result = await lyrics.current().catch(() => null);
+    const lines = (result?.lines ?? [])
+      .filter(line => Number.isFinite(line?.timestamp) && typeof line?.line === 'string' && line.line.trim())
+      .sort((a, b) => a.timestamp - b.timestamp);
+    if (!lines.length) return false; // Subscribed but silent: LRCLIB may still know this track.
+    // Identity guards stop/skip/repeat races even when Hoshimi reuses the same Track object.
+    if (this.entries.get(player.guildId) !== entry || player.queue.current !== entry.track) return false;
+    entry.mode = 'push';
+    entry.lines = lines.map(line => line.line.trim());
+    entry.times = lines.map(line => Math.max(0, Math.round(line.timestamp)));
+    entry.index = indexAt(entry.times, this.position(player, entry));
+    void this.touch(player.guildId, true);
+    return true;
+  }
+
+  /** A node-pushed line. `skipped` events are seeks: apply the index at once, offsets and all. */
+  ingest(guildId: string, payload: { lineIndex: number; skipped?: boolean }) {
+    const entry = this.entries.get(guildId);
+    if (!entry || entry.mode !== 'push') return;
+    if (entry.pending) { clearTimeout(entry.pending); entry.pending = undefined; }
+    const index = Math.max(0, Math.min(entry.lines.length - 1, Math.round(payload.lineIndex)));
+    if (payload.skipped) { this.move(guildId, entry, index); return; }
+    if (entry.offset > 0) {
+      // Positive offset = lyrics later: hold the previous line for that long; the latest event wins.
+      entry.pending = setTimeout(() => { entry.pending = undefined; this.move(guildId, entry, index); }, entry.offset);
+      entry.pending.unref?.();
+    } else if (entry.offset < 0) {
+      // Negative offset = lyrics earlier: leap ahead using the plugin's own timestamps.
+      this.move(guildId, entry, Math.max(index, indexAt(entry.times, entry.times[index]! - entry.offset)));
+    } else this.move(guildId, entry, index);
+  }
+
+  private move(guildId: string, entry: Entry, index: number) {
+    const clamped = Math.max(-1, Math.min(entry.lines.length - 1, index));
+    if (this.entries.get(guildId) !== entry || clamped === entry.index) return;
+    entry.index = clamped;
+    void this.touch(guildId, true);
   }
 
   /** Hoshimi 0.6.1 extrapolates position after paused playerUpdate packets too. Use its raw
@@ -239,9 +314,9 @@ export class LyricsService {
     const entry = this.entries.get(player.guildId);
     if (!entry) return;
     if (entry.track !== player.queue.current) { this.forget(player.guildId); return; }
-    const index = indexAt(entry.times, this.position(player, entry) - entry.offset + LEAD_MS);
-    // No throttle on the ask: the panel writer coalesces and paces repaints, so asking now is correct.
-    if (index !== entry.index) { entry.index = index; void this.touch(player.guildId); }
+    // Node-pushed lines arrive exactly on time; this position check is only a seek/pause correction.
+    const index = indexAt(entry.times, this.position(player, entry) - entry.offset + (entry.mode === 'push' ? 0 : LEAD_MS));
+    if (index !== entry.index) { entry.index = index; void this.touch(player.guildId, true); }
     this.schedule(player);
   }
 
@@ -250,6 +325,7 @@ export class LyricsService {
     const entry = this.entries.get(player.guildId);
     if (!entry) return;
     if (entry.timer) { clearTimeout(entry.timer); entry.timer = undefined; }
+    if (entry.mode === 'push') return; // The node owns the boundary; nothing to arm here.
     if (player.isPaused?.()) return;
     const boundary = entry.index + 1;
     const next = entry.times[boundary];
@@ -279,6 +355,7 @@ export class LyricsService {
       entry.times = lines.map(line => line.time);
     }
     entry.offset = Math.round(seconds * 1000);
+    if (entry.pending) { clearTimeout(entry.pending); entry.pending = undefined; }
     this.align(player);
     return entry.offset / 1000;
   }
@@ -287,11 +364,18 @@ export class LyricsService {
   forget(guildId: string) {
     const entry = this.entries.get(guildId);
     if (entry?.timer) clearTimeout(entry.timer);
+    if (entry?.pending) clearTimeout(entry.pending);
     this.entries.delete(guildId);
   }
 
+  /** Playback is over for this player: drop the state and release the node subscription. */
+  stop(player: Pick<LyricsPlayer, 'guildId' | 'lyrics'>) {
+    this.forget(player.guildId);
+    if (this.subscribed.delete(player.guildId)) void player.lyrics?.unsubscribe().catch(() => {});
+  }
+
   /** A failed panel edit is not worth surfacing: the next line tries again a moment later. */
-  private touch(guildId: string) {
-    return Promise.resolve(this.refresh(guildId)).catch(() => {});
+  private touch(guildId: string, urgent = false) {
+    return Promise.resolve(this.refresh(guildId, urgent)).catch(() => {});
   }
 }
