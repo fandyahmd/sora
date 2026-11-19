@@ -62,6 +62,23 @@ export function deriveQueries(title?: string, author?: string): Array<{ artist: 
 }
 
 /**
+ * Edition labels carried by an upload or a provider entry: `(Official Lyric Video)`, `(Audio)`,
+ * `(Official Music Video)`, live/remix takes... LRCLIB holds several timings for one song — a lyric
+ * video, the studio audio and a music video with a skit intro do not share a timeline, and their
+ * durations are near-identical, so duration alone cannot pick the right one. Matching the label of
+ * the playing upload against the label of the candidate is the signal that survives that tie.
+ */
+export function editionLabels(value?: string): string[] {
+  const found = normalize(value).match(/\b(?:lyrics? video|music video|official video|visualizer|audio|video|live|remix|acoustic|cover|instrumental|karaoke|slowed|sped up|speed up|nightcore|extended|radio edit|lyrics?)\b/g) ?? [];
+  const mapped = found.map(label =>
+    label === 'speed up' ? 'sped up'
+    : label === 'lyric' || label === 'lyrics' || label === 'lyrics video' ? 'lyric video'
+    : label === 'video' || label === 'official video' ? 'music video'
+    : label);
+  return [...new Set(mapped)];
+}
+
+/**
  * Does a provider's candidate describe the same recording as the playing track?
  * `durationSeconds` may be 0/undefined when the provider does not know it; the remaining
  * checks still apply. Version qualifiers (live, remix, slowed...) must match exactly.

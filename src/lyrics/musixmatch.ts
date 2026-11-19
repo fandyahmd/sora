@@ -9,7 +9,7 @@
  */
 import { setTimeout as wait } from 'node:timers/promises';
 import { parseLRC } from './lrc.js';
-import { DURATION_TOLERANCE_MS, MANUAL_TOLERANCE_MS, deriveQueries, editionMatches } from './metadata.js';
+import { DURATION_TOLERANCE_MS, MANUAL_TOLERANCE_MS, deriveQueries, editionLabels, editionMatches } from './metadata.js';
 import type { LyricsLookup } from './types.js';
 
 const ROOT = 'https://apic-desktop.musixmatch.com/ws/1.1/';
@@ -83,8 +83,14 @@ export const lookupMusixmatch: LyricsLookup = async (track, manual = false) => {
       .filter((hit): hit is MxmTrack => !!hit && Number.isFinite(hit.track_id) && !!hit.has_subtitles)
       .filter(hit => editionMatches({ title: hit.track_name, artist: hit.artist_name, durationSeconds: hit.track_length }, track, queries, tolerance));
     if (!candidates.length) continue;
-    // Closest length wins, same rule as LRCLIB: a live or remixed take is the same words at the wrong times.
-    if (length) candidates.sort((a, b) => Math.abs((a.track_length ?? 0) * 1000 - length) - Math.abs((b.track_length ?? 0) * 1000 - length));
+    // Edition agreement first, closest length second — same rule as LRCLIB: the lyric video, studio
+    // audio and music video of one song share a duration but not a timeline.
+    const wanted = editionLabels(track.info.title);
+    const score = (hit: MxmTrack) => {
+      const have = editionLabels(hit.track_name);
+      return have.filter(label => wanted.includes(label)).length * 10 - have.filter(label => !wanted.includes(label)).length;
+    };
+    candidates.sort((a, b) => score(b) - score(a) || (length ? Math.abs((a.track_length ?? 0) * 1000 - length) - Math.abs((b.track_length ?? 0) * 1000 - length) : 0));
     const subtitle = await call('track.subtitle.get', [['track_id', String(candidates[0]!.track_id)], ['subtitle_format', 'lrc']]);
     const lrc = subtitle?.subtitle?.subtitle_body;
     const lines = lrc ? parseLRC(lrc) : [];

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'bun:test';
-import { chain, withCache, editionMatches, deriveQueries, lookupMusixmatch, type LyricLine, type LyricsTrack } from '../src/lyrics/index.js';
+import { chain, withCache, editionLabels, editionMatches, deriveQueries, lookupLRCLIB, lookupMusixmatch, type LyricLine, type LyricsTrack } from '../src/lyrics/index.js';
 import { resetMusixmatch } from '../src/lyrics/musixmatch.js';
+import { resetLRCLIB } from '../src/lyrics/lrclib.js';
 
 const track: LyricsTrack = { info: { title: 'Timeless', author: 'TheWeekndVEVO', length: 252_000 } };
 const timed = (text: string, time: number): LyricLine => ({ time, text });
@@ -134,4 +135,51 @@ test('the cache evicts the oldest entry and never pins a rejection', async () =>
   fail = false;
   await flaky(one); // the rejection was evicted, so this retries instead of replaying the failure
   assert.equal(calls, 6);
+});
+
+test('edition labels map upload noise to the editions LRCLIB entries carry', () => {
+  assert.deepEqual(editionLabels('Timeless (Official Lyric Video)'), ['lyric video']);
+  assert.deepEqual(editionLabels('Timeless (Lyrics)'), ['lyric video']);
+  assert.deepEqual(editionLabels('Timeless (Official Audio)'), ['audio']);
+  assert.deepEqual(editionLabels('Timeless (Official Music Video)'), ['music video']);
+  assert.deepEqual(editionLabels('Timeless (Official Video)'), ['music video']);
+  assert.deepEqual(editionLabels('Timeless'), []);
+});
+
+test('LRCLIB prefers the entry whose edition label matches the upload over an unlabeled exact hit', async () => {
+  resetLRCLIB();
+  // The Timeless case: /api/get returns an unlabeled entry from another timing family while the
+  // lyric-video-labeled entry (what Soundy's raw-title search surfaces) matches the playing upload.
+  const video: LyricsTrack = { info: { title: 'Artist - Song (Official Lyric Video)', author: 'Artist', length: 185_000 } };
+  const unlabeled = { id: 1, trackName: 'Song', artistName: 'Artist', duration: 185, syncedLyrics: '[00:01.00] unlabeled timing' };
+  const labeled = { id: 2, trackName: 'Song (Official Lyric Video)', artistName: 'Artist', duration: 185, syncedLyrics: '[00:04.00] labeled timing' };
+  const original = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    calls.push(url);
+    return Response.json(url.includes('/api/get?') ? unlabeled : [unlabeled, labeled]);
+  }) as typeof fetch;
+  try {
+    assert.deepEqual(await lookupLRCLIB(video), [timed('labeled timing', 4_000)]);
+    assert.ok(calls.some(url => url.includes('/api/search?q=') && url.includes(encodeURIComponent('Artist - Song (Official Lyric Video)'))),
+      'the raw upload title must be searched so label-bearing entries surface');
+  } finally { globalThis.fetch = original; }
+});
+
+test('a plain title still wins from the exact endpoint without spending search requests', async () => {
+  resetLRCLIB();
+  const plain: LyricsTrack = { info: { title: 'Song', author: 'Artist', length: 185_000 } };
+  const hit = { id: 1, trackName: 'Song', artistName: 'Artist', duration: 185, syncedLyrics: '[00:01.00] exact' };
+  const original = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    calls.push(String(input));
+    return Response.json(hit);
+  }) as typeof fetch;
+  try {
+    assert.deepEqual(await lookupLRCLIB(plain), [timed('exact', 1_000)]);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0]!.includes('/api/get?'));
+  } finally { globalThis.fetch = original; }
 });

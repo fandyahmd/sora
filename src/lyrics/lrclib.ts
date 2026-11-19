@@ -6,7 +6,7 @@
  */
 import { setTimeout as wait } from 'node:timers/promises';
 import { parseLRC } from './lrc.js';
-import { DURATION_TOLERANCE_MS, MANUAL_TOLERANCE_MS, deriveQueries, editionMatches } from './metadata.js';
+import { DURATION_TOLERANCE_MS, MANUAL_TOLERANCE_MS, deriveQueries, editionLabels, editionMatches } from './metadata.js';
 import type { LyricsLookup, LyricsTrack } from './types.js';
 
 const LOOKUP_TIMEOUT_MS = 6_000;
@@ -49,41 +49,62 @@ function matchingHit(hit: Hit, track: LyricsTrack, queries: ReturnType<typeof de
 }
 
 /** Try exact metadata first, then rank validated search hits. Matching duration alone cannot
- * establish that a video intro or arrangement has the same timing as the provider's recording. */
+ * establish that a video intro or arrangement has the same timing as the provider's recording:
+ * LRCLIB holds near-identical durations for the lyric video, the studio audio and the music video,
+ * each with its own timeline. Candidates are ranked by edition-label agreement with the playing
+ * upload first (the signal Soundy's raw-title search gets from LRCLIB's own ranking), then by
+ * duration closeness. A raw-title search joins the cleaned queries so label-bearing entries surface. */
 export const lookupLRCLIB: LyricsLookup = async (track, manual = false) => {
   const length = track.info.length ?? 0;
   const queries = deriveQueries(track.info.title, track.info.author);
   if (track.info.isStream || !queries.length) return [];
   const seconds = Math.round(length / 1000);
   const tolerance = manual ? MANUAL_TOLERANCE_MS : DURATION_TOLERANCE_MS;
+  const wanted = editionLabels(track.info.title);
+  // Label agreement dominates; a candidate carrying a foreign edition label is worse than an unlabeled one.
+  const score = (hit: Hit) => {
+    const have = editionLabels(hit.trackName);
+    return have.filter(label => wanted.includes(label)).length * 10 - have.filter(label => !wanted.includes(label)).length;
+  };
+  const perfectEdition = (hit: Hit) => score(hit) >= wanted.length * 10;
+  const pool: Hit[] = [];
+  const seen = new Set<number>();
+  const add = (hit: Hit) => {
+    if (!matchingHit(hit, track, queries, tolerance)) return;
+    if (hit.id) { if (seen.has(hit.id)) return; seen.add(hit.id); }
+    pool.push(hit);
+  };
 
   if (seconds) {
-    // The exact endpoint is preferred, but every returned hit is still checked against title, artist,
-    // version qualifiers and duration before it can become the active lyrics.
+    // The exact endpoint is preferred, but its hit only wins outright when its edition label agrees
+    // with the upload; otherwise it joins the pool and the labeled search candidates can outrank it.
     for (const { artist, title } of queries) {
       const hit = await request(`/api/get?artist_name=${encodeURIComponent(artist)}&track_name=${encodeURIComponent(title)}&duration=${seconds}`);
       if (hit && !Array.isArray(hit) && matchingHit(hit, track, queries, tolerance)) {
-        const lines = parseLRC(hit.syncedLyrics!);
-        if (lines.length) return lines;
+        if (perfectEdition(hit)) {
+          const lines = parseLRC(hit.syncedLyrics!);
+          if (lines.length) return lines;
+        }
+        add(hit);
       }
     }
   }
 
-  const results = await Promise.all(queries.map(({ artist, title }) =>
-    request(`/api/search?track_name=${encodeURIComponent(title)}&artist_name=${encodeURIComponent(artist)}`)));
-  const seen = new Set<number>();
-  const synced: Hit[] = [];
+  const searches = queries.map(({ artist, title }) =>
+    `/api/search?track_name=${encodeURIComponent(title)}&artist_name=${encodeURIComponent(artist)}`);
+  // Soundy's path: the raw upload title lets LRCLIB's text ranking surface the matching edition.
+  searches.push(`/api/search?q=${encodeURIComponent(`${track.info.title ?? ''} ${track.info.author ?? ''}`.trim())}`);
+  const results = await Promise.all(searches.map(request));
   for (const result of results) {
-    for (const hit of Array.isArray(result) ? result : []) {
-      if (!matchingHit(hit, track, queries, tolerance)) continue;
-      if (hit.id) { if (seen.has(hit.id)) continue; seen.add(hit.id); }
-      synced.push(hit);
-    }
+    for (const hit of Array.isArray(result) ? result : []) add(hit);
   }
-  // Closest length wins: a live or remixed take is the same words at the wrong times.
-  if (length) synced.sort((a, b) => Math.abs((a.duration ?? 0) * 1000 - length) - Math.abs((b.duration ?? 0) * 1000 - length));
-  const best = synced[0];
+  // Edition agreement first, closest length second: a live or remixed take is the same words at the wrong times.
+  pool.sort((a, b) => score(b) - score(a) || (length ? Math.abs((a.duration ?? 0) * 1000 - length) - Math.abs((b.duration ?? 0) * 1000 - length) : 0));
+  const best = pool[0];
   if (!best?.syncedLyrics) return [];
   if (length && !manual && Math.abs((best.duration ?? 0) * 1000 - length) > DURATION_TOLERANCE_MS) return [];
   return parseLRC(best.syncedLyrics);
 };
+
+/** Test hook: drop the queue and cooldown state so one suite cannot poison the next. */
+export function resetLRCLIB() { requests = Promise.resolve(); nextRequestAt = 0; cooldownUntil = 0; }

@@ -11,7 +11,7 @@
  *   service   the clock: push events, boundary timers, pause/seek, /lyrics-sync offset
  */
 export { parseLRC, indexAt, MAX_TIMER_MS } from './lrc.js';
-export { deriveQueries, clean, cleanArtist, normalize, versions, editionMatches, DURATION_TOLERANCE_MS, MANUAL_TOLERANCE_MS } from './metadata.js';
+export { deriveQueries, clean, cleanArtist, normalize, versions, editionLabels, editionMatches, DURATION_TOLERANCE_MS, MANUAL_TOLERANCE_MS } from './metadata.js';
 export { lookupLRCLIB } from './lrclib.js';
 export { lookupMusixmatch } from './musixmatch.js';
 export { withCache } from './cache.js';

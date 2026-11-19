@@ -3,6 +3,7 @@ import { test } from 'bun:test';
 import { MessagesMethods } from 'seyfert';
 import { deriveQueries, indexAt, lookupLRCLIB, LyricsService, parseLRC, type LyricLine, type LyricsPlayer } from '../src/lyrics/index.js';
 import { lyricsBlock, playerCard } from '../src/ui/cards.js';
+import { resetLRCLIB } from '../src/lyrics/lrclib.js';
 import { MusicClient } from '../src/client.js';
 import { MemoryStore } from './memory-store.js';
 
@@ -480,6 +481,7 @@ test('LRCLIB Retry-After stops fallbacks and new lookups until the cooldown expi
     for (const guild of ['cooldown-a', 'cooldown-b', 'cooldown-c', 'cooldown-d']) lyrics.forget(guild);
     Date.now = originalNow;
     globalThis.fetch = originalFetch;
+    resetLRCLIB(); // the fake clock left cooldownUntil in the real future; never leak it to other suites
   }
 });
 
