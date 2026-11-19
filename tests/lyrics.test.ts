@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'bun:test';
 import { MessagesMethods } from 'seyfert';
-import { deriveQueries, indexAt, LyricsService, parseLRC, type LyricLine, type LyricsPlayer } from '../src/services/lyrics.js';
+import { deriveQueries, indexAt, lookupLRCLIB, LyricsService, parseLRC, type LyricLine, type LyricsPlayer } from '../src/lyrics/index.js';
 import { lyricsBlock, playerCard } from '../src/ui/cards.js';
 import { MusicClient } from '../src/client.js';
 import { MemoryStore } from './memory-store.js';
@@ -260,7 +260,7 @@ test('lookup rejects a wrong recording even when its duration matches exactly', 
     const wrong = { id: 1, trackName: 'Another Song', artistName: 'Other Artist', duration: 185, syncedLyrics: '[00:01.00] wrong recording' };
     const right = { id: 2, trackName: 'Song', artistName: 'Artist', duration: 184, syncedLyrics: '[00:06.00] correct recording' };
     globalThis.fetch = (async input => Response.json(String(input).includes('/api/get?') ? wrong : [wrong, right])) as typeof fetch;
-    const lyrics = new LyricsService(async () => {});
+    const lyrics = new LyricsService(async () => {}, lookupLRCLIB);
     await lyrics.trackStart(player('matched'));
     assert.deepEqual(lyrics.current('matched'), { lines: ['correct recording'], index: -1 });
     lyrics.forget('matched');
@@ -273,7 +273,7 @@ test('lookup keeps live, remix and acoustic recording qualifiers when choosing s
     const studio = { id: 1, trackName: 'Song', artistName: 'Artist', duration: 185, syncedLyrics: '[00:01.00] studio timing' };
     const live = { id: 2, trackName: 'Song (Live)', artistName: 'Artist', duration: 184, syncedLyrics: '[00:08.00] live timing' };
     globalThis.fetch = (async input => Response.json(String(input).includes('/api/get?') ? studio : [studio, live])) as typeof fetch;
-    const lyrics = new LyricsService(async () => {});
+    const lyrics = new LyricsService(async () => {}, lookupLRCLIB);
     await lyrics.trackStart(player('live', 'Artist - Song (Live)'));
     assert.deepEqual(lyrics.current('live'), { lines: ['live timing'], index: -1 });
     lyrics.forget('live');
@@ -285,7 +285,7 @@ test('lookup rejects a studio cut with a ten-second duration gap instead of gues
   try {
     const studio = { id: 1, trackName: 'Song', artistName: 'Artist', duration: 175, syncedLyrics: '[00:01.00] studio timing' };
     globalThis.fetch = (async input => Response.json(String(input).includes('/api/get?') ? studio : [studio])) as typeof fetch;
-    const lyrics = new LyricsService(async () => {});
+    const lyrics = new LyricsService(async () => {}, lookupLRCLIB);
     await lyrics.trackStart(player('intro'));
     assert.equal(lyrics.current('intro'), undefined, 'extra duration could be intro, outro, or another arrangement');
     lyrics.forget('intro');
@@ -359,7 +359,7 @@ test('an explicit video offset can load the matching studio lyrics rejected by a
   try {
     const studio = { id: 1, trackName: 'Song', artistName: 'Artist', duration: 175, syncedLyrics: '[00:01.00] studio timing' };
     globalThis.fetch = (async input => Response.json(String(input).includes('/api/get?') ? studio : [studio])) as typeof fetch;
-    const lyrics = new LyricsService(async () => {});
+    const lyrics = new LyricsService(async () => {}, lookupLRCLIB);
     const speaker = player('video-offset');
     await lyrics.trackStart(speaker);
     assert.equal(lyrics.current('video-offset'), undefined);
@@ -381,7 +381,7 @@ test('fallback searches clean artist/song pairs instead of repeating the YouTube
       return Response.json(url.pathname === '/api/search' && url.searchParams.get('track_name') === 'KOMANG'
         && url.searchParams.get('artist_name')?.toLowerCase() === 'raim laode' ? [hit] : []);
     }) as unknown as typeof fetch;
-    const lyrics = new LyricsService(async () => {});
+    const lyrics = new LyricsService(async () => {}, lookupLRCLIB);
     const speaker = player('clean-query', 'KOMANG - RAIM LAODE LYRIC OFFICIAL');
     speaker.queue.current!.info.author = 'Raim Laode';
     speaker.queue.current!.info.length = 239_000;
@@ -400,7 +400,7 @@ test('a failed candidate lookup does not discard another successful exact result
       if (url.searchParams.get('track_name') !== 'Song') throw new Error('candidate timed out');
       return Response.json(hit);
     }) as unknown as typeof fetch;
-    const lyrics = new LyricsService(async () => {});
+    const lyrics = new LyricsService(async () => {}, lookupLRCLIB);
     await lyrics.trackStart(player('partial', 'Artist - Song'));
     assert.deepEqual(lyrics.current('partial'), { lines: ['found'], index: -1 });
     lyrics.forget('partial');
@@ -443,7 +443,7 @@ test('LRCLIB lookups stay sequential even when two guilds start tracks together'
       active--;
       return Response.json([]);
     }) as unknown as typeof fetch;
-    const lyrics = new LyricsService(async () => {});
+    const lyrics = new LyricsService(async () => {}, lookupLRCLIB);
     await Promise.all([
       lyrics.trackStart(player('network-a', 'Artist - Song')),
       lyrics.trackStart(player('network-b', 'Artist - Song')),
@@ -459,7 +459,7 @@ test('LRCLIB Retry-After stops fallbacks and new lookups until the cooldown expi
   const originalNow = Date.now;
   let now = originalNow() + 10_000;
   let requests = 0;
-  const lyrics = new LyricsService(async () => {});
+  const lyrics = new LyricsService(async () => {}, lookupLRCLIB);
   try {
     Date.now = () => now;
     globalThis.fetch = (async () => {
@@ -572,7 +572,7 @@ test('push mode honours /lyrics-sync: delayed lines wait, early lines leap ahead
     const speaker = pushedPlayer('guild-offset', [
       { timestamp: 0, line: 'one' }, { timestamp: 1_000, line: 'two' }, { timestamp: 2_000, line: 'three' },
     ]);
-    const lyrics = new LyricsService(async () => {});
+    const lyrics = new LyricsService(async () => {}, lookupLRCLIB);
     await lyrics.trackStart(speaker);
     await lyrics.setOffset(speaker, 2); // +2 s: the pushed line is held back by exactly that much
     assert.equal(lyrics.current('guild-offset')!.index, -1);

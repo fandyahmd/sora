@@ -1,7 +1,7 @@
 import { ActionRow, Button, ButtonStyle, Container, MediaGallery, MediaGalleryItem, MessageFlags, Section, Separator, Spacing, TextDisplay, Thumbnail } from 'seyfert';
 import { BANNER, BRAND, COLORS, EMOJI, inviteURL, supportURL } from './theme.js';
 import { clip, displayText, duration, httpURL, lyricText } from './text.js';
-import type { LyricsSlice } from '../services/lyrics.js';
+import type { LyricsSlice } from '../lyrics/index.js';
 
 export type Track = {
   info: { title: string; author?: string; uri?: string; artworkUrl?: string | null; length?: number; isStream?: boolean };

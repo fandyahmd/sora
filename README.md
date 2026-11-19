@@ -17,9 +17,11 @@ Built by [Fan](https://github.com/fandyahmd). Self-host it, fork it, run it for 
 - **Persistent controller.** One card per guild, edited in place, restored after a restart. No message spam.
 - **Live lyrics.** When the node runs a lyrics plugin (LavaLyrics, java-lyrics or lavasrc), each line
   arrives as a `LyricsLine` event on the node's own playback clock — the tightest timing available.
-  Without one, synced lines come from [LRCLIB](https://lrclib.net) (free, no API key), matched by
-  artist, title, recording qualifiers and duration, and the highlight follows Hoshimi's playback clock
-  through pause, resume and position corrections. `/lyrics-sync` handles recordings with different intros.
+  Without one, synced lines come from [LRCLIB](https://lrclib.net) (free, no API key) with a
+  [Musixmatch](https://www.musixmatch.com) fallback, matched by artist, title, recording qualifiers and
+  duration, and the highlight follows Hoshimi's playback clock through pause, resume and position
+  corrections. Lookups are cached, so replays and autoplay repeats cost no requests. `/lyrics-sync`
+  handles recordings with different intros.
 - **Autoplay.** When the queue ends, Sora keeps the music going from the last track.
 - **Typed requests.** Members type a song title or URL into the request channel; their line is deleted and
   Sora's feedback self-destructs after five seconds.

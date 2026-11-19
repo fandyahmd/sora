@@ -11,7 +11,7 @@ import { bannerFile } from '../ui/banner.js';
 import { idleCard, playerCard } from '../ui/cards.js';
 import { added, failed } from '../feedback.js';
 import { GuildStore } from './db.js';
-import { LyricsService } from './lyrics.js';
+import { LyricsService } from '../lyrics/index.js';
 import { requestFromMessage } from './requests.js';
 
 const FEEDBACK_LIFETIME = 5_000;
